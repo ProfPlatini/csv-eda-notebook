@@ -38,7 +38,7 @@ Rode isto antes de configurar qualquer agente — leva cerca de 2 minutos e vali
 código. O `pip install` baixa pandas, seaborn e nbconvert.
 
 ```bash
-cd ~/Documents/PROJETO-SKILLS/csv-eda-notebook   # ou a pasta onde você clonou
+cd csv-eda-notebook    # ou a pasta onde você clonou
 
 python3 -m venv .venv
 source .venv/bin/activate                        # Windows: .venv\Scripts\activate
