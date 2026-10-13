@@ -1,0 +1,22 @@
+# Notebooks gerados pela skill (regeráveis a partir do CSV)
+*_eda.ipynb
+*.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Ferramentas
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Sistema operacional / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

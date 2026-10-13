@@ -1,0 +1,51 @@
+id_venda,data_pedido,regiao,categoria,canal,vendedor,quantidade,preco_unitario,desconto_pct,valor_total,avaliado
+1,2024-01-05,Sudeste,Eletrônicos,Online,Ana Souza,2,1299.90,5.0,2469.81,Sim
+2,2024-01-07,Sul,Alimentos,Loja física,Carlos Lima,10,24.50,0.0,245.00,Sim
+3,2024-01-12,Nordeste, Vestuário,Online,Marina Alves,1,189.90,15.0,161.42,Não
+4,2024-01-15,Sudeste,Eletrônicos,Loja física,Carlos Lima,1,3499.00,10.0,3149.10,Sim
+5,2024-01-20,Centro-Oeste,Alimentos,Online,Ana Souza,25,19.90,2.0,487.55,Sim
+6,2024-02-02,Sul,Vestuário,Online,Pedro Alves,3,89.90,0.0,269.70,Não
+7,2024-02-05,Nordeste,Livros,Loja física,Marina Alves,4,59.90,20.0,191.68,Sim
+8,2024-02-11,Sudeste,Eletrônicos,Online,Ana Souza,1,899.00,5.0,854.05,Sim
+9,2024-02-14,Centro-Oeste,Alimentos,Loja física,Carlos Lima,30,19.90,0.0,597.00,Sim
+10,2024-02-19,Sul,Vestuário,Online,Pedro Alves,2,159.90,10.0,287.82,Não
+11,2024-03-01,Nordeste,Livros,Online,Marina Alves,2,74.90,0.0,149.80,Sim
+12,2024-03-04,Sudeste,Eletrônicos,Loja física,Carlos Lima,1,1299.90,25.0,974.93,Não
+13,2024-03-09,Centro-Oeste,Vestuário,Online,Ana Souza,1,219.90,0.0,219.90,Sim
+14,2024-03-15,Sul,Alimentos,Loja física,Pedro Alves,15,22.00,5.0,313.50,Sim
+15,2024-03-22,Nordeste,Eletrônicos,Online,Ana Souza,3,749.00,10.0,2022.30,Sim
+16,2024-04-02,Sudeste,Livros,Loja física,Marina Alves,1,99.90,0.0,99.90,Não
+17,2024-04-08,Centro-Oeste,Alimentos,Online,Carlos Lima,40,18.50,7.5,688.20,Sim
+18,2024-04-14,Sul,Vestuário,Loja física,Pedro Alves,2,139.90,0.0,279.80,Sim
+19,2024-04-21,Sudeste,Eletrônicos,Online,Ana Souza,1,1999.00,12.0,1759.12,Sim
+20,2024-05-03,Nordeste,Alimentos,Loja física,Marina Alves,12,26.90,0.0,322.80,Não
+21,2024-05-09,Centro-Oeste,Livros,Online,Pedro Alves,3,54.90,12.0,144.93,Sim
+22,2024-05-17,Sul,Eletrônicos,Loja física,Carlos Lima,1,599.00,0.0,599.00,Sim
+23,2024-05-25,Sudeste,Vestuário,Online,Ana Souza,4,119.90,18.0,393.51,Não
+24,2024-06-02,Nordeste,Livros,Loja física,Marina Alves,5,64.90,0.0,324.50,Sim
+25,2024-06-11,Centro-Oeste,Eletrônicos,Online,Pedro Alves,2,1099.00,15.0,1868.30,Sim
+26,2024-06-19,Sul,Alimentos,Online,Carlos Lima,20,21.00,3.0,407.40,Sim
+27,2024-06-28,Sudeste,Livros,Loja física,Ana Souza,1,89.90,0.0,89.90,Não
+28,2024-07-04,Sul,Vestuário,Online,Marina Alves,1,179.90,25.0,134.93,Sim
+29,2024-07-15,Nordeste,Eletrônicos,Loja física,Carlos Lima,4,499.00,10.0,1796.40,Sim
+30,2024-07-23,Centro-Oeste,Vestuário,Online,Pedro Alves,2,149.90,0.0,299.80,Não
+31,2024-08-02,Sudeste,Alimentos,Loja física,Ana Souza,8,27.50,0.0,220.00,Sim
+32,2024-08-09,Sul,Livros,Online,Marina Alves,6,49.90,20.0,239.52,Sim
+33,2024-08-18,Nordeste,Vestuário,Loja física,Carlos Lima,1,259.90,0.0,259.90,Não
+34,2024-08-27,Centro-Oeste,Eletrônicos,Online,Pedro Alves,1,649.00,8.0,593.68,Sim
+35,2024-09-05,Sudeste,Eletrônicos,Loja física,Ana Souza,2,479.90,0.0,959.80,Sim
+36,2024-09-12,Sul,Alimentos,Online,Carlos Lima,50,17.90,10.0,805.50,Sim
+37,2024-09-20,Nordeste,Livros,Loja física,Marina Alves,1,109.90,0.0,109.90,Não
+38,2024-09-30,Centro-Oeste,Vestuário,Online,Pedro Alves,3,129.90,5.0,370.22,Sim
+39,2024-10-08,Sudeste,Alimentos,Loja física,Ana Souza,15,23.90,2.0,350.13,Sim
+40,2024-10-16,Sul,Eletrônicos,Online,Carlos Lima,1,1499.00,20.0,1199.20,Não
+41,2024-10-25,Nordeste,Vestuário,Loja física,Marina Alves,2,99.90,0.0,199.80,Sim
+42,2024-11-03,Centro-Oeste,Livros,Online,Pedro Alves,4,69.90,15.0,237.66,Sim
+43,2024-11-12,Sudeste,Eletrônicos,Loja física,Ana Souza,5,299.00,5.0,1420.25,Sim
+44,2024-11-21,Sul,Alimentos,Online,Carlos Lima,35,20.00,4.0,672.00,Sim
+45,2024-12-02,Nordeste,Eletrônicos,Online,Marina Alves,1,899.00,0.0,899.00,Não
+46,2024-12-11,Centro-Oeste,Vestuário,Loja física,Pedro Alves,2,169.90,10.0,305.82,Sim
+47,2024-12-20,Sudeste,Livros,Online,Ana Souza,7,44.90,25.0,235.73,Sim
+48,2024-12-29,Sul,Alimentos,Loja física,Carlos Lima,10,25.00,0.0,250.00,Sim
+49,2024-01-19,Sudeste,Eletrônicos,Online,Ana Souza,1,1299.90,5.0,2469.81,Sim
+50,2024-02-28,Nordeste,Vestuário,Loja física,Marina Alves,1,189.90,15.0,161.42,Não
