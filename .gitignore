@@ -1,5 +1,7 @@
 # Notebooks gerados pela skill (regeráveis a partir do CSV)
 *_eda.ipynb
+# ...exceto o exemplo executado, versionado como vitrine
+!exemplos/vendas_exemplo_eda.ipynb
 *.ipynb_checkpoints/
 
 # Python

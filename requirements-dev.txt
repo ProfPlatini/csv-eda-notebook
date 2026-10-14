@@ -1,0 +1,3 @@
+# Dependências para rodar os testes (tests/) e o CI.
+-r requirements.txt
+pytest>=7

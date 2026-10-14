@@ -2,18 +2,17 @@
 
 # 📊 csv-eda-notebook
 
-### Transforme qualquer CSV em um notebook Jupyter de análise exploratória — pronto, com gráficos e resumo.
+### Transforme um CSV em um notebook Jupyter de análise exploratória, já executado, com gráficos e resumo.
 
-**Você envia o CSV. O agente entrega o notebook com os gráficos já executados.**
+**Você envia o CSV. O agente entrega o notebook com os gráficos prontos e os principais achados.**
 
+[![Testes](https://github.com/ProfPlatini/csv-eda-notebook/actions/workflows/testes.yml/badge.svg)](https://github.com/ProfPlatini/csv-eda-notebook/actions/workflows/testes.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![pandas](https://img.shields.io/badge/pandas-%3E%3D2.0-orange.svg)](https://pandas.pydata.org/)
-[![seaborn](https://img.shields.io/badge/seaborn-%3E%3D0.13-teal.svg)](https://seaborn.pydata.org/)
-[![Agentes: Claude Code · Claude.ai · Codex · opencode](https://img.shields.io/badge/agentes-Claude%20Code%20%C2%B7%20Claude.ai%20%C2%B7%20Codex%20%C2%B7%20opencode-8A2BE2.svg)](#-usando-com-agentes-de-ia)
-[![Feito com](https://img.shields.io/badge/feito%20com-opencode%20%F0%9F%90%BB%20space%20bunny-free-ff69b4.svg)](https://opencode.ai)
+[![Agentes: Claude Code · Codex · opencode · Claude.ai](https://img.shields.io/badge/agentes-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20opencode%20%C2%B7%20Claude.ai-8A2BE2.svg)](#-usando-com-agentes-de-ia)
 
-**[⭐ Star no GitHub](https://github.com/ProfPlatini/csv-eda-notebook)** · **[🐛 Reportar issue](https://github.com/ProfPlatini/csv-eda-notebook/issues)** · **[📖 Ver exemplos](exemplos/)**
+**[📓 Ver o notebook de exemplo](exemplos/vendas_exemplo_eda.ipynb)** · **[🐛 Reportar issue](https://github.com/ProfPlatini/csv-eda-notebook/issues)** · **[📝 Changelog](CHANGELOG.md)**
 
 </div>
 
@@ -23,20 +22,20 @@
 
 > *"Tenho um CSV aqui, me ajuda a entender esses dados."*
 
-Normalmente isso vira uma conversa longa: pedir para descrever colunas, pedir histograms, pedir
+Normalmente isso vira uma conversa longa: pedir para descrever colunas, pedir histogramas, pedir
 correlações, pedir um resumo… **um pedido por vez, e cada resposta no chat se perde.**
 
 ## 🚀 A solução
 
-Um **agente de IA** executa esta skill e entrega **um arquivo `.ipynb`**: um notebook Jupyter
-completo, com código legível em português, gráficos já renderizados e um resumo com os principais
-achados dos seus dados.
+Um **agente de IA** (ou você, pelo terminal) roda esta skill e recebe **um arquivo `.ipynb`**:
+um notebook Jupyter com código legível em português, gráficos já renderizados e um resumo com
+os achados dos seus dados, com números.
 
 | Antes 😐 | Depois 🚀 |
 |---|---|
 | "quais colunas tem esse CSV?" | Um notebook com tudo, de uma vez |
 | "agora faz um histograma da coluna X" | Gráficos já executados dentro do arquivo |
-| "e tem correlação entre elas?" | Resumo em markdown no final do notebook |
+| "e tem correlação entre elas?" | Pearson e Spearman, com a força de cada par |
 | Respostas espalhadas no chat | **Um arquivo que você abre, compartilha e reproduz** |
 
 ---
@@ -45,37 +44,29 @@ achados dos seus dados.
 
 | | |
 |---|---|
-| 🧠 **Análise real** | Nada de seções genéricas com placeholders — tudo é decidido a partir do conteúdo do seu arquivo |
-| 📈 **Gráficos prontos** | Já embutidos no `.ipynb`, sem precisar executar nada |
-| 🇧🇷 **Tudo em português** | Código, comentários, títulos dos gráficos e o resumo |
-| 🧠 **Resumo com achados** | Principais observações, pontos de atenção e próximos passos |
-| 🤖 **Zero configuração de agente** | Funciona com Claude Code, Claude.ai, Codex e opencode — ou direto no terminal |
-| 🧪 **Base de exemplo** | Um CSV pronto em [`exemplos/`](exemplos/) para você testar em 2 minutos |
+| 🧠 **Análise adaptada** | As seções dependem das colunas que existem: sem coluna de data, sem série temporal; sem categóricas, sem gráficos de frequência |
+| 📈 **Gráficos prontos** | O notebook é executado na geração; gráficos e tabelas já vêm no `.ipynb` |
+| 🧹 **Limpeza transparente** | Espaços, números gravados como texto, datas, infinitos e duplicatas, tudo descrito em `PLANO_LIMPEZA`; os dados originais ficam em `df_bruto` |
+| 🔎 **Qualidade dos dados** | Ausentes, colunas constantes, categorias com grafias diferentes (`Sudeste` / `sudeste`), negativos raros, ids repetidos |
+| 📝 **Resumo com números** | Correlações com força correta, diferenças entre grupos, tendência no tempo, outliers, pontos de atenção |
+| 🇧🇷 **Tudo em português** | Código, comentários, títulos dos gráficos, números no formato `1.234,56` |
 
-### 📋 As 9 seções do notebook gerado
+### 📋 Seções do notebook
 
-| Seção | O que tem | Ícone |
-|---|---|---|
-| 0. Configuração | Parâmetros de leitura e funções de apoio para os gráficos | ⚙️ |
-| 1. Carregamento | `pd.read_csv` com separador e encoding **detectados automaticamente** | 📥 |
-| 2. Visão geral | Dimensões, tipos por coluna, valores distintos, ausentes e duplicadas | 🔎 |
-| 3. Limpeza mínima | Espaços em texto, números como texto (moeda/separador de milhar), datas, duplicatas | 🧹 |
-| 4. Estatísticas | `describe` + distorção/cauda para numéricas; frequências para categóricas | 📊 |
-| 5. Agregações | Métricas por categoria e tabela de contingência entre categóricas | 🧮 |
-| 6. Visualizações | Ausentes, histogramas, boxplots, barras, correlação, boxplot por categoria, série temporal | 🎨 |
-| 7. Variável de interesse | Seção extra gerada quando você informa `--alvo` (ex.: churn, preço) | 🎯 |
-| 8. Resumo | Principais achados, pontos de atenção e próximos passos em markdown | 📝 |
+Configuração e funções de apoio → leitura → visão geral e duplicatas → limpeza → qualidade dos
+dados → variáveis numéricas (descritivas, distribuições, outliers) → categóricas (frequências) →
+texto livre → correlação → numéricas por categoria → relação entre categóricas → evolução
+temporal → variável de interesse (`--alvo`) → resumo.
 
-> 💡 **Nada é inventado.** Um CSV sem coluna de data **não** gera série temporal. Um CSV de uma
-> única coluna numérica gera **apenas** o que faz sentido. Colunas que parecem identificador
-> (`id_venda`, `cnpj`) são reconhecidas e deixadas de fora dos gráficos — porque número de nota
-> fiscal não tem significado analítico.
+Só aparecem as seções que fazem sentido para o arquivo, e a numeração se ajusta.
+
+> 💡 **Nada é inventado.** Colunas que identificam registros (`id_venda`, `cpf`, um índice
+> salvo por engano) são reconhecidas e ficam fora dos gráficos. Correlações e diferenças entre
+> grupos são descritas como associações, nunca como causa.
 
 ---
 
 ## ⚡ Teste rápido (2 minutos)
-
-Rode isto **antes** de configurar qualquer agente — valida o código e já te entrega um notebook.
 
 ```bash
 git clone https://github.com/ProfPlatini/csv-eda-notebook.git
@@ -85,181 +76,181 @@ python3 -m venv .venv
 source .venv/bin/activate          # 🪟 Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-python scripts/gerar_eda.py exemplos/vendas_exemplo.csv \
-    -o analise_vendas.ipynb --alvo avaliado --titulo "Análise exploratória — vendas 2024"
+python scripts/gerar_eda.py exemplos/vendas_exemplo.csv -o analise_vendas_eda.ipynb --alvo valor_total
 ```
 
-✅ **Saída esperada:**
+✅ **Saída (início):**
 
 ```
-Notebook gerado em: /.../analise_vendas.ipynb
-Notebook executado com sucesso: gráficos e tabelas já estão no arquivo.
+Notebook gerado em: /.../csv-eda-notebook/analise_vendas_eda.ipynb
+Execução: ok
+Avisos:
+- 1 duplicata removida (linhas idênticas a uma anterior).
+---
+### Visão geral
+
+- **Arquivo:** `vendas_exemplo.csv`
+...
 ```
 
-🎉 Pronto. Abra com:
-
-```bash
-jupyter lab analise_vendas.ipynb
-```
-
-…ou arraste o arquivo direto para o [Google Colab](https://colab.research.google.com/).
-
-> 💡 Se o `source` falhar no seu shell, use o interpretador direto:
-> `./.venv/bin/python scripts/gerar_eda.py ...`
-
-### 🧪 Outros testes válidos
-
-```bash
-# 📂 base real: detecção automática de separador, encoding, moeda e datas
-python scripts/gerar_eda.py ~/Downloads/meu_arquivo.csv -o analise_meu.ipynb
-
-# ⚡ base grande: gera rápido, sem rodar as células
-python scripts/gerar_eda.py base_grande.csv --nao-executar --max-graficos 10
-
-# 🛠️ quando a detecção automática errar
-python scripts/gerar_eda.py dados.csv --sep ";" --encoding latin-1
-```
+🎉 Abra com `jupyter lab analise_vendas_eda.ipynb`, no VS Code, ou envie o arquivo para o
+[Google Colab](https://colab.research.google.com/). Se mover o notebook de pasta, ajuste
+`CSV_PATH` na primeira célula de código.
 
 ---
 
-## 📖 O que acontece com o arquivo de exemplo
+## 📖 O exemplo, passo a passo
 
-Usando [`exemplos/vendas_exemplo.csv`](exemplos/vendas_exemplo.csv) (50 vendas, com data,
-região, categoria, canal, valores e uma coluna de avaliação), o notebook sai com **43 células
-e 8 gráficos**:
+[`exemplos/vendas_exemplo.csv`](exemplos/vendas_exemplo.csv) tem 51 linhas de vendas de 2024 (data,
+região, categoria, canal, vendedor, quantidade, preço, desconto, valor total e avaliação), com
+alguns problemas de propósito (a venda 22, por exemplo, aparece duas vezes). O notebook gerado
+com o comando abaixo está versionado em
+[`exemplos/vendas_exemplo_eda.ipynb`](exemplos/vendas_exemplo_eda.ipynb) (o GitHub mostra os
+gráficos):
+
+```bash
+python scripts/gerar_eda.py exemplos/vendas_exemplo.csv --alvo valor_total --titulo "Análise exploratória — vendas 2024"
+```
+
+Os números abaixo foram copiados dessa execução:
 
 | Bloco | Resultado |
 |---|---|
-| 🔎 **Visão geral** | 50 linhas × 11 colunas, `id_venda` reconhecida como identificador, 2 linhas duplicadas |
-| 📊 **Descritivas** | `valor_total` de 89,90 a 2.469,81, com assimetria à direita por causa dos eletrônicos |
-| 🏷️ **Categóricas** | região, categoria, canal e vendedor com frequência e percentual |
-| 🔗 **Correlações** | heatmap entre as 4 numéricas + tabela dos pares ordenados por `r` |
-| ⚖️ **Comparações** | `valor_total` e `preco_unitario` por região (boxplot + pontos) |
-| 🔀 **Cruzamento** | composição de categoria por região em heatmap |
-| 📅 **Série temporal** | média e volume de vendas por mês (detecção automática de `MS`) |
-| 🎯 **Alvo `avaliado`** | distribuição das classes e boxplots das numéricas por classe |
-| 📝 **Resumo** | achados, pontos de atenção e próximos passos em markdown |
+| 🔎 **Leitura e visão geral** | 51 linhas × 11 colunas; `id_venda` reconhecida como identificador |
+| 🧹 **Limpeza** | `data_pedido` convertida no formato ISO; espaço removido de `" Vestuário"`; a venda 22, gravada duas vezes, vira uma (51 → 50 linhas) |
+| ⚠️ **Qualidade** | `desconto_pct` com 3 ausentes (6,0%); `regiao` com as grafias `"Sudeste"` / `"sudeste"` |
+| 📊 **Numéricas** | `valor_total`: mediana 323,65, de 89,90 a 3.149,10, assimetria 1,93; 12,0% de outliers em `preco_unitario` e em `valor_total` |
+| 🔗 **Correlação** | `preco_unitario` × `valor_total`: r = 0,83 e rho = 0,44; `quantidade` × `preco_unitario`: rho = −0,81 |
+| ⚖️ **Numéricas por categoria** | `valor_total` por `categoria` (eta² = 0,65): média de 1.453,55 em Eletrônicos contra 182,35 em Livros |
+| 🔀 **Categóricas** | `regiao` × `vendedor`, V de Cramér = 0,61 |
+| 📅 **Série temporal** | Mensal, de 05/01/2024 a 29/12/2024 |
+| 🎯 **Alvo `valor_total`** | Distribuição, correlação com as outras numéricas e média por `categoria` e `vendedor` |
+| 📝 **Resumo** | Achados, pontos de atenção e próximos passos ligados aos dados (ex.: unificar as grafias de `regiao`) |
 
 ---
 
 ## 🤖 Usando com agentes de IA
 
-Todos os agentes abaixo seguem o padrão **Agent Skills** (uma pasta com `SKILL.md`).
-A mesma skill funciona nos quatro — o que muda é **só onde a pasta é instalada**.
+A skill segue o padrão **Agent Skills** (uma pasta com `SKILL.md`). O que muda entre os
+agentes é onde a pasta fica e como ela é acionada.
 
-| Agente | 📍 Caminho da skill | 🎯 Como acionar |
+| Agente | 📍 Onde instalar | 🎯 Como acionar |
 |---|---|---|
-| **Claude Code** | `~/.claude/skills/csv-eda-notebook` | Automático, ou `/csv-eda-notebook` |
-| **Claude.ai** (app desktop) | pela UI de skills | Automático, digitando `@` na conversa |
-| **Codex** | `~/.agents/skills/csv-eda-notebook` | Automático, ou `$csv-eda-notebook` |
-| **opencode** | `~/.config/opencode/skills/csv-eda-notebook` | Automático |
+| **Claude Code** | `~/.claude/skills/csv-eda-notebook` (pessoal) ou `.claude/skills/csv-eda-notebook` (no projeto) | Automático pelo pedido, ou `/csv-eda-notebook` |
+| **Codex** | `~/.agents/skills/csv-eda-notebook` (usuário) ou `.agents/skills/csv-eda-notebook` (no repositório) | Automático, `$csv-eda-notebook` ou `/skills`; reinicie se não aparecer |
+| **opencode** | `~/.config/opencode/skills/csv-eda-notebook`; também lê `~/.claude/skills` e `~/.agents/skills` | Automático, pela ferramenta `skill` |
+| **Claude.ai** | Upload de um ZIP da pasta (veja abaixo) | Automático pelo pedido |
 
-> ⚠️ Depois de instalar, garanta que o **Python que o agente executa** tem as dependências:
-> ```bash
-> pip install -r requirements.txt    # rode dentro do venv que o agente usa
-> ```
+> ⚠️ O Python que o agente usa precisa ter as dependências:
+> `pip install -r <pasta-da-skill>/requirements.txt` (de preferência num ambiente virtual).
+> Sem `nbclient`/`ipykernel` o notebook é gerado sem execução e o script sai com código 4.
 
 <details>
-<summary><b>🤖 Claude Code</b> — clique para expandir</summary>
+<summary><b>🤖 Claude Code</b></summary>
 
 ```bash
-git clone https://github.com/ProfPlatini/csv-eda-notebook.git \
-    ~/.claude/skills/csv-eda-notebook
+git clone https://github.com/ProfPlatini/csv-eda-notebook.git ~/.claude/skills/csv-eda-notebook
 pip install -r ~/.claude/skills/csv-eda-notebook/requirements.txt
 ```
 
-Reinicie o Claude Code. A skill aparece automaticamente em `/skills` (ou digite
-`/csv-eda-notebook`).
-
-**Frases que acionam a skill** — copie e cole:
+Frases que acionam a skill:
 
 - 🗣️ *"Analisa esse CSV pra mim e me diz o que tem de interessante"*
 - 🗣️ *"Faz uma EDA do arquivo de vendas que tá na pasta `dados/`"*
-- 🗣️ *"Gera um notebook de exploração desse CSV, a coluna `churn` é o que importa"*
-- 🗣️ *"Quero entender a distribuição e as correlações dessa base"*
+- 🗣️ *"Gera um notebook de exploração desse CSV; a coluna `churn` é o que importa"*
 
 O Claude lê o `SKILL.md`, roda `scripts/gerar_eda.py`, entrega o caminho do notebook e resume
-os achados. Depois é só pedir ajustes — *"inclui as vendas online também"*, *"usa escala
-logarítmica no eixo de valor"* — e ele edita as células do notebook.
+os achados. Depois é só pedir ajustes, e ele edita as células do notebook.
 
 </details>
 
 <details>
-<summary><b>🌐 Claude.ai (web, desktop e app)</b> — clique para expandir</summary>
-
-Na web o Claude não executa código na sua máquina, então **suba o script para um ambiente com
-Python** (Codespaces, Colab, seu servidor) e envie o CSV junto com o `SKILL.md`:
-
-> *"Use as instruções deste SKILL.md. O CSV está anexo. Gere o notebook e me diga os principais achados."*
-
-Para uso recorrente, no **app desktop** use *Configurações → Skills → Adicionar* e aponte para
-a pasta do repositório clonado. Aí a skill fica disponível em todas as conversas, com execução local.
-
-</details>
-
-<details>
-<summary><b>📘 Codex</b> — clique para expandir</summary>
+<summary><b>📘 Codex</b></summary>
 
 ```bash
-git clone https://github.com/ProfPlatini/csv-eda-notebook.git \
-    ~/.agents/skills/csv-eda-notebook
+git clone https://github.com/ProfPlatini/csv-eda-notebook.git ~/.agents/skills/csv-eda-notebook
+pip install -r ~/.agents/skills/csv-eda-notebook/requirements.txt
 ```
 
-Reinicie o Codex e confira com `/skills` (ou mencione com `$csv-eda-notebook`).
-
-Para usar **só dentro de um projeto**, basta clonar dentro do repositório em
-`.agents/skills/csv-eda-notebook` — o Codex detecta a skill ao subir na pasta.
+Confira com `/skills` ou mencione com `$csv-eda-notebook`. Para usar só em um projeto, clone em
+`.agents/skills/csv-eda-notebook` dentro do repositório.
 
 > `$csv-eda-notebook analisa ~/Downloads/vendas.csv, a coluna churn é o alvo`
 
-💡 O Codex também aceita um `AGENTS.md` no projeto. Se preferir **não** instalar a skill, basta
-colocar no `AGENTS.md` do repositório uma linha como:
-*"para análise exploratória de CSV, rode `python scripts/gerar_eda.py <arquivo>`"*.
+</details>
+
+<details>
+<summary><b>🐰 opencode</b></summary>
+
+```bash
+git clone https://github.com/ProfPlatini/csv-eda-notebook.git ~/.config/opencode/skills/csv-eda-notebook
+pip install -r ~/.config/opencode/skills/csv-eda-notebook/requirements.txt
+```
+
+O opencode também procura skills em `~/.claude/skills` e `~/.agents/skills`: um único clone
+pode servir a dois agentes.
 
 </details>
 
 <details>
-<summary><b>🐰 opencode</b> — clique para expandir</summary>
+<summary><b>🌐 Claude.ai</b> (não testado)</summary>
 
-```bash
-git clone https://github.com/ProfPlatini/csv-eda-notebook.git \
-    ~/.config/opencode/skills/csv-eda-notebook
-```
+1. Gere o ZIP da skill a partir do clone (fica de fora o que não é da skill, como testes e CI):
 
-A skill é descoberta **automaticamente** ao iniciar o opencode.
+   ```bash
+   git archive --format=zip --prefix=csv-eda-notebook/ -o csv-eda-notebook.zip HEAD
+   ```
 
-💡 Se você estiver na configuração padrão com `AGENTS.md`, uma alternativa é chamar o script
-direto pelo terminal — ele funciona sem nenhuma configuração de agente.
+2. Em *Customize → Skills*, clique em **+** → *Upload a skill* e envie o ZIP (em alguns planos o
+   caminho é *Settings → Capabilities*). A opção *Code execution and file creation* precisa
+   estar ativa.
+
+A skill roda no contêiner do Claude, não na sua máquina. Não verificamos se `nbclient` e
+`ipykernel` estão disponíveis lá; sem eles, o notebook sai sem execução (código 4) e você o
+roda depois no Jupyter ou no Colab.
 
 </details>
 
 ---
 
-## 💻 Uso pela linha de comando
+## 💻 Linha de comando
 
 ```bash
-python scripts/gerar_eda.py <arquivo.csv> [opções]
+python scripts/gerar_eda.py <arquivo> [opções]
 ```
 
 | ⚙️ Opção | 📌 Padrão | 📖 Descrição |
 |---|---|---|
-| `-o, --saida` | `<nome-do-csv>_eda.ipynb` | Caminho do notebook gerado |
-| `--alvo COLUNA` | — | Variável de interesse (gera a seção 🎯 7) |
+| `-o, --saida` | `<nome-do-csv>_eda.ipynb` ao lado do CSV | Notebook gerado (`dados.csv.zip` → `dados_eda.ipynb`) |
+| `--alvo COLUNA` | — | Variável de interesse: numérica, binária ou categórica com até 20 classes |
 | `--titulo "..."` | `Análise exploratória — <arquivo>` | Título do cabeçalho |
-| `--sep` / `--separador` | 🔍 autodetectado | Ex.: `--sep ";"` |
-| `--encoding` | 🔍 autodetectado | Ex.: `--encoding latin-1` |
-| `--max-graficos N` | `6` | Máximo de variáveis numéricas nos gráficos |
+| `--sep` / `--separador` | 🔍 detectado | `,` `;` `\|` ou `tab` |
+| `--encoding` | 🔍 detectado | `utf-8`, `cp1252`, `latin-1`... |
+| `--decimal {.,,}` | 🔍 detectado | Força o separador decimal (`,` = padrão brasileiro, com milhar `.`) |
+| `--max-graficos N` | `6` | Máximo de numéricas nos histogramas e boxplots |
 | `--nao-executar` | executa | Salva o notebook sem rodar as células |
+
+### 🚦 Códigos de saída
+
+| Código | Significado |
+|---|---|
+| `0` | Notebook gerado (e executado, salvo com `--nao-executar`) |
+| `1` | Erro de entrada, com mensagem `Erro: ...` em português no stderr: arquivo inexistente, vazio ou só com cabeçalho, ZIP com mais de um arquivo ou com pasta dentro, encoding inválido, `--alvo` inexistente (com sugestões), ambíguo ou inadequado, `-o` igual ao CSV ou sem `.ipynb`, dependência ausente |
+| `2` | Uso incorreto das opções (ex.: `--max-graficos 0`) |
+| `3` | Notebook gerado, mas uma célula falhou; a linha `Execução:` cita a célula, a seção e o erro, e o arquivo guarda as saídas até ali |
+| `4` | Notebook gerado sem execução: falta `nbclient`, `nbformat` ou `ipykernel`, ou o kernel não iniciou |
 
 ### 🧠 O que a detecção automática resolve
 
 | Situação | Exemplos tratados |
 |---|---|
-| Separadores | `,` · `;` · `\t` · `|` — com ou sem aspas |
-| Encodings | UTF-8 · UTF-8 com BOM · Latin-1 |
-| Números | `1.234,56` · `R$ 1.234,56` · `1,234.56` |
-| Datas | `AAAA-MM-DD` · `DD/MM/AAAA` e afins |
-| Identificadores | `id_venda` · `cnpj` · `cpf` — fora dos gráficos |
+| Separador | `,` · `;` · tab · `\|`, com aspas; arquivo de uma coluna só |
+| Encoding | UTF-8 · UTF-8 com BOM · cp1252 (Excel no Windows: `“ ” – €`) · Latin-1 |
+| Compressão | `.csv.gz` · `.csv.zip` (um arquivo dentro) · `.bz2` · `.xz` |
+| Números | `1.234,56` · `R$ 1.234,56` · `1,234.56` · `1.137` em arquivo brasileiro · `12%` · `(1.234,00)` |
+| Datas | `AAAA-MM-DD` (com ou sem hora) · `DD/MM/AAAA` · `MM/DD/AAAA` · `DD-MM-AAAA` · `DD.MM.AAAA` |
+| Problemas de leitura | Linhas com campos a mais (ignoradas, com aviso e número da linha) · nomes de coluna repetidos ou vazios · separador sobrando no fim das linhas · índice exportado (`Unnamed: 0`) |
+| Identificadores | `id_venda` · `cnpj` · `codigoCliente` · códigos únicos como `PRT-00012` |
 
 ### 🧩 Como biblioteca Python
 
@@ -268,38 +259,26 @@ import sys
 sys.path.insert(0, "scripts")
 from eda import gerar
 
-caminho, mensagem = gerar("dados.csv", saida="analise.ipynb", alvo="churn")
+resultado = gerar("dados.csv", saida="analise.ipynb", alvo="churn")
+print(resultado.codigo, resultado.mensagem)   # 0 ok
+print(resultado.resumo)                        # o mesmo resumo em markdown do terminal
 ```
 
 ---
 
 ## 🛠️ Instalação e dependências
 
-> 📌 Requer **Python 3.10 ou superior**.
-
-```bash
-git clone https://github.com/ProfPlatini/csv-eda-notebook.git
-cd csv-eda-notebook
-
-python -m venv .venv
-source .venv/bin/activate          # 🪟 Windows: .venv\Scripts\activate
-
-pip install -r requirements.txt
-```
+> 📌 Requer **Python 3.10 ou superior**. Testado com pandas 2.0, 2.2 e 3.0.
 
 | 📦 Pacote | 🎯 Para quê |
 |---|---|
-| `pandas` | Leitura, limpeza, agregação e correlação |
-| `matplotlib` | Base dos gráficos |
-| `seaborn` | Estilo e os gráficos prontos (histograma, boxplot, heatmap) |
-| `numpy` | Dependência do pandas, usada na organização dos gráficos |
-| `nbformat` `nbconvert` `ipykernel` | *Opcional:* gravam os resultados (gráficos) no `.ipynb` |
+| `pandas`, `numpy` | Leitura, limpeza, agregações e correlações |
+| `matplotlib`, `seaborn` | Gráficos |
+| `nbformat`, `nbclient`, `ipykernel` | Executar o notebook e gravar gráficos e tabelas no `.ipynb` |
 
-> ⚠️ Se você instalar **só os três primeiros**, o script ainda gera o notebook — apenas sem os
-> gráficos embutidos (com um aviso na saída). Para gravar os resultados:
-> ```bash
-> pip install nbformat nbconvert ipykernel
-> ```
+Sem os três últimos o notebook ainda é gerado, mas sem resultados (código de saída 4); rode-o
+depois no Jupyter. O notebook é executado num kernel do **mesmo Python** que roda o script, então
+basta instalar tudo num único ambiente.
 
 ---
 
@@ -307,82 +286,67 @@ pip install -r requirements.txt
 
 ```
 csv-eda-notebook/
-├── 📄 SKILL.md                  # instruções que o agente lê (quando acionar, como rodar)
-├── 📖 README.md                 # este arquivo
-├── ⚖️ LICENSE                   # MIT
-├── 📦 requirements.txt
-├── 🚫 .gitignore
-├── 📂 exemplos/
-│   └── 🗒️ vendas_exemplo.csv    # base pequena para experimentar
-└── 📂 scripts/
-    ├── 🐍 gerar_eda.py          # ponto de entrada da linha de comando
-    └── 📂 eda/
-        ├── __init__.py          # expõe gerar() e main()
-        ├── cli.py               # argumentos e orquestração
-        ├── loader.py            # leitura (separador/encoding) e classificação de colunas
-        ├── codigo.py            # monta as células do notebook a partir do conteúdo do CSV
-        ├── resumo.py            # texto de resumo em markdown com números reais
-        └── notebook.py          # montagem do .ipynb, gravação e execução
+├── SKILL.md                    # instruções que o agente lê
+├── README.md · CHANGELOG.md · LICENSE
+├── requirements.txt            # dependências da skill
+├── requirements-dev.txt        # + pytest, para os testes
+├── .gitattributes              # o que fica fora do ZIP da skill (git archive)
+├── .github/workflows/testes.yml  # CI (Linux e Windows)
+├── exemplos/
+│   ├── vendas_exemplo.csv      # base pequena para experimentar
+│   └── vendas_exemplo_eda.ipynb  # notebook gerado com --alvo valor_total
+├── scripts/
+│   ├── gerar_eda.py            # ponto de entrada da linha de comando
+│   └── eda/
+│       ├── cli.py              # argumentos, validação e orquestração
+│       ├── loader.py           # leitura do arquivo e perfil das colunas
+│       ├── apoio.py            # limpeza e diagnósticos (copiado para dentro do notebook)
+│       ├── codigo.py           # escolhe as análises e escreve as células
+│       ├── resumo.py           # resumo em markdown com os números reais
+│       └── notebook.py         # monta, grava e executa o .ipynb
+└── tests/                      # pytest (unitários e ponta a ponta)
 ```
 
 ### 🔄 Como os módulos conversam
 
 ```
-   📄 CSV
-     │
-     ▼
- ┌───────────┐   entende o arquivo
- │  loader   │ ───────────────┐
- └───────────┘                │
-     │                        ▼
-     ▼                 ┌───────────┐
- ┌───────────┐         │  codigo   │ decide o que analisar
- │   cli     │ ──────▶ └───────────┘
- └───────────┘                │
-     │                        ▼
-     ▼                 ┌───────────┐
- ┌───────────┐         │  resumo   │ escreve as conclusões
- │ notebook  │ ◀────── └───────────┘
- └───────────┘
-     │
-     ▼
- 📓 analise_eda.ipynb  (gráficos já executados)
+ 📄 CSV ──▶ loader ──▶ apoio.limpar_dados ──▶ codigo.selecionar_colunas ──┬──▶ resumo
+           (leitura,    (mesmo plano que o      (o que analisar)          │
+            perfil)      notebook executa)                                ▼
+                                                              codigo.gerar_celulas
+                                                                          │
+                                                                          ▼
+                                                     notebook (grava e executa) ──▶ 📓 .ipynb
 ```
 
-O fluxo é **linear** e cada arquivo tem uma função só: `loader` → `codigo` → `resumo` →
-`notebook`, coordenados pelo `cli`.
+`cli` coordena tudo. O resumo e o notebook partem do **mesmo** `df` limpo e da **mesma** seleção
+de colunas, e as funções de `apoio.py` são copiadas para o notebook: os números do resumo batem
+com as tabelas.
 
 ---
 
-## 🧠 Decisões de projeto
+## ⚠️ Limitações conhecidas
 
-Escolhas que fiz por conta própria porque o pedido não especificava. Todas são fáceis de ajustar:
-
-| # | Escolha | 📍 Onde ajustar |
-|---|---|---|
-| 1 | Nome do repositório **`csv-eda-notebook`**, licença **MIT**, autor **`ProfPlatini`** | `README.md`, `LICENSE` |
-| 2 | Agentes-alvo: **Claude Code, Claude.ai, Codex e opencode** — só o caminho muda | Seção "Usando com agentes de IA" |
-| 3 | O notebook é **executado por padrão** para vir com gráficos embutidos; se `nbconvert` faltar, é salvo sem resultados com aviso | `scripts/eda/notebook.py` · flag `--nao-executar` |
-| 4 | Detecção de tipos com regras fixas: conversível para número com moeda aceito, datas em faixa plausível (1971–ano+2), `id`/`cnpj` por palavra inteira | `scripts/eda/loader.py` (`classificar_coluna`) |
-| 5 | A limpeza remove **duplicatas exatas** e reporta quantas saíram; a base original fica em `df_bruto` | `scripts/eda/codigo.py` (`_celula_limpeza`) |
-| 6 | Limite de 6 numéricas e 4 categóricas nos gráficos, para não virar uma parede de figuras | `scripts/eda/codigo.py` (constantes no topo) |
-| 7 | Números no padrão brasileiro (`1.234,56`), com títulos dos gráficos **sem acento** para não quebrar em ambientes sem UTF-8 | `scripts/eda/resumo.py` |
-| 8 | Sem testes automatizados nem `pyproject.toml`: o objetivo é a skill ser **copiável e legível** | — |
-
-> 💡 Para mudar o comportamento do agente → comece pelo `SKILL.md`.
-> Para mudar o conteúdo do notebook → comece pelo `codigo.py`.
+| Situação | Comportamento |
+|---|---|
+| Linhas idênticas | Removidas só quando há coluna identificadora (`id`, `codigo`...); sem ela, ficam e o notebook avisa. Mude `REMOVER_DUPLICADAS` na seção de limpeza se precisar. |
+| Datas ambíguas | Se todos os dias forem até 12, a coluna é lida como dia/mês (padrão brasileiro), com aviso. Troque o formato em `FORMATOS_DATA` se for mês/dia. |
+| Milhar sem vírgula | Em arquivo sem nenhum número com vírgula decimal, `1.234` é lido como 1,234. Use `--decimal ,` se forem milhares. |
+| Gráficos | Até 6 numéricas nos histogramas (`--max-graficos`), 4 categóricas nos gráficos de barras, 15 numéricas na correlação, 3 pares numérica × categoria, 2 colunas de data. Os pontos individuais dos boxplots usam amostra de 2.000 linhas em bases grandes; as estatísticas usam a base inteira. |
+| Estatística | Descritiva e exploratória: sem p-valores, testes de hipótese ou modelos. |
+| Kernel | O notebook é executado com o Python que roda o script (não com um kernel `python3` instalado à parte). |
 
 ### 🎨 Personalizando o notebook gerado
 
-O notebook é **código comum** — quando você quiser algo além do padrão, edite as células
-diretamente em vez de reescrever o script:
+O notebook é código comum. Cada análise começa com constantes que você pode editar:
 
 | O que mudar | 📍 Onde |
 |---|---|
-| Paleta / tema dos gráficos | célula de configuração (`sns.set_theme`, cores fixas) |
-| Mais variáveis nos gráficos | listas `COLS_NUM_GRAFICO` / `COLS_CAT_GRAFICO` |
-| Periodicidade da série temporal | variável `REGRA` (`D`, `W`, `MS`, `QS`, `YS`) |
-| Trocar a variável de interesse | `ALVO` na célula correspondente |
+| Arquivo e leitura | `CSV_PATH`, `LEITURA` (configuração) |
+| Variável de interesse | `ALVO` (configuração) e `CLASSE_POSITIVA` (seção do alvo) |
+| Limpeza | `FORMATOS_DATA`, `REMOVER_DUPLICADAS`, `PLANO_LIMPEZA` |
+| Colunas de cada análise | `COLS_DESCRIBE`, `COLS_NUM_GRAFICO`, `COLS_FREQ`, `COLS_CAT_GRAFICO`, `COLS_CORR`, `PARES` |
+| Periodicidade da série temporal | `REGRAS` (`D`, `W`, `MS`, `QS`, `YS` por coluna de data) |
 
 ---
 
@@ -391,74 +355,44 @@ diretamente em vez de reescrever o script:
 <details>
 <summary><b>O notebook já vem com os gráficos ou preciso executar?</b></summary>
 
-**Já vem.** Por padrão o script executa o notebook via `nbconvert` e grava os resultados dentro
-do `.ipynb`. Se faltar o `nbconvert`, o arquivo é salvo **sem** resultados e um aviso aparece
-na saída — basta rodar `jupyter lab <arquivo>.ipynb`.
+**Já vem.** O script executa o notebook com `nbclient` e grava os resultados no `.ipynb`. Se
+faltar `nbclient`, `nbformat` ou `ipykernel`, o arquivo sai sem resultados, o script avisa e
+termina com código 4; aí é só abrir no Jupyter e rodar tudo.
 </details>
 
 <details>
-<summary><b>Funciona com meu CSV "bagunçado" (separador ;, acento, moeda, milhar)?</b></summary>
+<summary><b>Funciona com meu CSV "bagunçado" (ponto e vírgula, acento, moeda, milhar)?</b></summary>
 
-Sim — a detecção automática cobre `,` `;` `\t` `|`, UTF-8 / UTF-8 com BOM / Latin-1,
-`R$ 1.234,56`, `1.234,56`, `1,234.56` e datas em vários formatos. Se ainda assim errar, force
-com `--sep` e `--encoding`.
+Na maioria dos casos, sim: veja a tabela da detecção automática. Quando algo for lido errado,
+force com `--sep`, `--encoding` ou `--decimal`. Os avisos da saída dizem o que foi ajustado
+(linhas ignoradas, datas ambíguas, colunas renomeadas).
 </details>
 
 <details>
 <summary><b>Funciona sem agente de IA?</b></summary>
 
-**Sim.** O `scripts/gerar_eda.py` é um CLI comum e roda em qualquer lugar com Python 3.10+.
-A skill de agente é só uma forma automatizada de te poupar de decorar os comandos.
+**Sim.** `scripts/gerar_eda.py` é um script de linha de comando comum e roda em qualquer lugar
+com Python 3.10+.
 </details>
 
 <details>
-<summary><b>Posso mudar o conteúdo do notebook?</b></summary>
+<summary><b>O que acontece se uma célula falhar?</b></summary>
 
-**Sim.** Ele é gerado a partir do seu arquivo, mas o resultado é código Python comum. Edite as
-células direto no Jupyter, ou ajuste as constantes em `scripts/eda/codigo.py`.
-</details>
-
-<details>
-<summary><b>Funciona com `.tsv`, `.csv.zip` ou arquivo com ponto e vírgula?</b></summary>
-
-Sim, desde que seja tabular. Arquivos que precisam apenas de **conversão de formato** (ex.:
-"converta para JSON") não são o caso de uso desta skill.
+O notebook é salvo mesmo assim, com as saídas até a célula que falhou. A linha `Execução:` diz
+qual célula, de qual seção, e o erro; o código de saída é 3.
 </details>
 
 ---
 
-## 🚀 Publicar no GitHub
-
-<details>
-<summary><b>Clique para expandir os comandos</b></summary>
+## 🧪 Desenvolvimento
 
 ```bash
-# 1. dentro da pasta do projeto
-git init -b main
-git add .
-git commit -m "feat: skill de análise exploratória de CSV com geração de notebook"
-
-# 2. crie o repositório vazio no GitHub (sem README/LICENSE, para não conflitar)
-gh repo create ProfPlatini/csv-eda-notebook --public --description \
-  "Skill para agentes de IA: transforma CSV em notebook Jupyter de análise exploratória"
-
-# 3. publique
-git remote add origin https://github.com/ProfPlatini/csv-eda-notebook.git
-git push -u origin main
-
-# 4. tag de versão
-git tag -a v1.0.0 -m "Primeira versão"
-git push origin v1.0.0
+pip install -r requirements-dev.txt
+python -m pytest -m "not lento"      # unitários e ponta a ponta (executa notebooks)
+python -m pytest -m lento            # desempenho com 200 mil linhas
 ```
 
-**Checklist antes de publicar:**
-
-- [x] autor `ProfPlatini` no `README.md` e no `LICENSE`
-- [ ] nome do projeto (`name` do `SKILL.md`) igual ao nome da pasta da skill
-- [ ] `git status` não mostra `*.ipynb` gerados (já estão no `.gitignore`)
-- [ ] `requirements.txt` com versões mínimas, não fixadas demais
-
-</details>
+O CI roda a suíte no Linux (pandas 2.0, 2.2 e 3.x) e no Windows.
 
 ---
 
@@ -466,7 +400,7 @@ git push origin v1.0.0
 
 <div align="center">
 
-**MIT** — veja [LICENSE](LICENSE)
+**MIT**: veja [LICENSE](LICENSE)
 
 Feito por [ProfPlatini](https://github.com/ProfPlatini)
 

@@ -1,0 +1,7 @@
+# Fora do ZIP gerado por `git archive` (pacote da skill para o Claude.ai).
+tests/ export-ignore
+.github/ export-ignore
+requirements-dev.txt export-ignore
+
+# O notebook de exemplo não conta nas estatísticas de linguagem do GitHub.
+exemplos/*.ipynb linguist-documentation

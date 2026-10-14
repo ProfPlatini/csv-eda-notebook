@@ -1,20 +1,37 @@
-"""Carregamento e perfilagem de arquivos CSV.
+"""Leitura e perfil de arquivos CSV.
 
-Responsável por ler o arquivo de forma tolerante (separador e encoding) e por
-classificar cada coluna como numérica, categórica, data ou texto livre. Essa
-classificação é a base de todo o notebook gerado: as análises só são criadas
-para os tipos que realmente existem no arquivo.
+Responsável por ler o arquivo de forma tolerante (compressão, encoding,
+separador, decimal brasileiro, linhas malformadas) e por classificar cada
+coluna como numérica, categórica, data ou texto livre. Essa classificação é a
+base de todo o notebook: as análises só são criadas para os tipos que existem.
 """
 
 from __future__ import annotations
 
+import bz2
+import codecs
+import contextlib
 import csv
+import gzip
+import io
+import lzma
 import re
 import warnings
-from dataclasses import dataclass
+import zipfile
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
+
+from .apoio import (
+    converter_datas,
+    detectar_formato_data,
+    normalizar_para_numerico,
+    padronizar_colunas,
+    parece_nome_de_id,
+    plural,
+)
 
 NUMERICA = "numerica"
 CATEGORICA = "categorica"
@@ -23,19 +40,35 @@ TEXTO = "texto"
 
 # Um texto com muitos valores distintos não serve para gráficos de frequência.
 LIMITE_CATEGORICAS = 50
-# Porcentagem de valores válidos que precisam ser interpretáveis como data.
-LIMITE_CONVERSAO_DATA = 0.80
-# Porcentagem de valores válidos que precisam ser interpretáveis como número.
+# Fração de valores que precisam ser interpretáveis como número.
 LIMITE_CONVERSAO_NUMERICA = 0.90
-# Letras que podem aparecer sem transformar o texto em não-número: só moeda
-# (R$, US$, EUR...). "24h" traz a letra H e precisa continuar categórico.
-LETRAS_MONETARIAS = {"R", "U", "S", "D"}
+# Tamanho da amostra usada para decidir o tipo de uma coluna de texto.
+AMOSTRA_CLASSIFICACAO = 5_000
+# Ordem de desempate na detecção do separador.
+SEPARADORES = [";", "\t", "|", ","]
+APELIDOS_SEPARADOR = {"\\t": "\t", "tab": "\t", "tabulacao": "\t", "tabulação": "\t"}
+COMPRESSOES = {".gz": "gzip", ".bz2": "bz2", ".xz": "xz", ".zip": "zip"}
 
-PADRAO_NOME_DATA = (
-    "data", "date", "dia", "mes", "ano", "hora", "hour", "time",
-    "dt", "period", "periodo", "timestamp", "birth", "nascimento",
-)
-PALAVRAS_ID = {"id", "ids", "cod", "codigo", "cnpj", "cpf", "uuid", "hash", "key", "chave"}
+
+class ErroLeitura(ValueError):
+    """O arquivo não pôde ser lido como CSV (mensagem em português)."""
+
+
+@dataclass
+class Leitura:
+    """Resultado de `carregar_csv`: os dados e como foram lidos."""
+
+    df: pd.DataFrame
+    parametros: dict  # argumentos exatos de pd.read_csv, repetidos no notebook
+    avisos: list[str] = field(default_factory=list)
+
+    @property
+    def separador(self) -> str:
+        return self.parametros["sep"]
+
+    @property
+    def encoding(self) -> str:
+        return self.parametros["encoding"]
 
 
 @dataclass
@@ -48,6 +81,9 @@ class ColunaInfo:
     nulos: int
     n_unicos: int
     exemplos: list
+    formato_data: str | None = None
+    parece_codigo: bool = False      # texto curto, sem espaços e único (ex.: "PRT-00012")
+    indice_exportado: bool = False   # "Unnamed: 0" com 0, 1, 2... (índice salvo pelo pandas)
 
     @property
     def nulos_pct(self) -> float:
@@ -58,199 +94,353 @@ class ColunaInfo:
         return self.total - self.nulos
 
     @property
+    def binaria(self) -> bool:
+        return self.tipo == NUMERICA and self.n_unicos == 2
+
+    @property
     def identificador(self) -> bool:
-        """True quando a coluna parece ser um identificador único (id, cpf...)."""
-        parece_id = _parece_nome_de_id(self.nome)
-        unico = self.n_unicos >= max(self.nao_nulos, 1) and self.nao_nulos > 20
-        return (parece_id and unico) or (unico and self.tipo == TEXTO)
+        """True quando a coluna identifica registros (id, cpf, índice exportado...)."""
+        if self.indice_exportado:
+            return True
+        if self.nao_nulos == 0:
+            return False
+        if (parece_nome_de_id(self.nome) and self.nao_nulos >= 10
+                and self.n_unicos / self.nao_nulos >= 0.95):
+            return True
+        return self.tipo == TEXTO and self.n_unicos == self.nao_nulos and self.parece_codigo
 
 
-def _parece_nome_de_id(nome: str) -> bool:
-    """True para nomes como `id_venda`, `codigo_cliente`, `cnpj`.
+# ------------------------------------------------------------------- leitura
 
-    A comparação é feita por palavra inteira: sem isso, `data_pedido` casaria
-    com "id" dentro de "pedido" e a coluna seria tratada como identificador.
+def _ler_bytes(caminho: Path, n_bytes: int) -> bytes:
+    """Lê até `n_bytes` (já descomprimidos) do início do arquivo."""
+    compressao = COMPRESSOES.get(caminho.suffix.lower())
+    if compressao == "zip":
+        with zipfile.ZipFile(caminho) as arquivo_zip:
+            membros = [m for m in arquivo_zip.infolist() if not m.is_dir()]
+            if len(membros) != 1:
+                nomes = ", ".join(m.filename for m in membros) or "nenhum"
+                raise ErroLeitura(f"O ZIP precisa conter exatamente um arquivo; contém: {nomes}. "
+                                  "Extraia o CSV desejado e rode de novo.")
+            if len(arquivo_zip.infolist()) > 1:
+                raise ErroLeitura(f"O ZIP guarda {membros[0].filename} dentro de uma pasta, e o pandas "
+                                  "só lê ZIP com um único item. Extraia o CSV e rode de novo.")
+            with arquivo_zip.open(membros[0]) as arquivo:
+                return arquivo.read(n_bytes)
+    abrir = {"gzip": gzip.open, "bz2": bz2.open, "xz": lzma.open}.get(compressao, open)
+    with abrir(caminho, "rb") as arquivo:
+        return arquivo.read(n_bytes)
+
+
+def detectar_encoding(amostra: bytes) -> str:
+    """utf-8 (com ou sem BOM), cp1252 (Excel no Windows) ou latin-1."""
+    if amostra.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig"
+    if amostra.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return "utf-16"
+    try:
+        # Decodificador incremental: um caractere cortado no fim da amostra não é erro.
+        codecs.getincrementaldecoder("utf-8")().decode(amostra, final=False)
+        return "utf-8"
+    except UnicodeDecodeError:
+        pass
+    try:
+        amostra.decode("cp1252")
+        return "cp1252"
+    except UnicodeDecodeError:  # bytes 0x81, 0x8D, 0x8F, 0x90 e 0x9D não existem em cp1252
+        return "latin-1"
+
+
+def detectar_separador(linhas: list[str]) -> str:
+    """Escolhe o separador que divide cabeçalho e linhas no mesmo número de campos.
+
+    Um candidato é consistente quando o cabeçalho tem mais de um campo e ao
+    menos 90% das linhas têm esse mesmo número de campos (aspas respeitadas).
+    Sem nenhum consistente, vale o que divide a maioria das linhas nesse número
+    ou em um a mais (separador sobrando no fim); as demais são malformadas e
+    ignoradas na leitura. Sem nenhum, o arquivo tem uma coluna só e o separador
+    devolvido é um caractere que não aparece no texto.
     """
-    partes = [p for p in re.split(r"[^a-z0-9]+", nome.lower()) if p]
-    return any(parte in PALAVRAS_ID for parte in partes)
-
-
-def ler_amostra(caminho: Path, n_bytes: int = 65_536) -> tuple[str, str, str | None]:
-    """Lê uma amostra do arquivo e devolve (texto, separador, encoding)."""
-    conteudo = None
-    encoding = None
-    for tentativa in ("utf-8-sig", "utf-8", "latin-1"):
+    linhas = [linha for linha in linhas if linha.strip()][:201]
+    candidatos = []  # (separador, campos do cabeçalho, moda das linhas, fração com a moda)
+    for separador in SEPARADORES:
         try:
-            conteudo = caminho.read_text(encoding=tentativa)[:n_bytes]
-            encoding = tentativa
-            break
-        except (UnicodeDecodeError, UnicodeError):
+            campos = [len(registro) for registro in csv.reader(linhas, delimiter=separador)]
+        except csv.Error:  # caractere nulo ou aspas inválidas
             continue
-    if conteudo is None:  # arquivo binário ou com encoding exótico
-        conteudo = caminho.read_bytes()[:n_bytes].decode("utf-8", errors="replace")
-        encoding = "utf-8"
+        if not campos or campos[0] <= 1:
+            continue
+        resto = campos[1:]
+        moda, frequencia = Counter(resto).most_common(1)[0] if resto else (campos[0], 1)
+        candidatos.append((separador, campos[0], moda, frequencia / max(len(resto), 1)))
+    for aceitos in ([c for c in candidatos if c[2] == c[1] and c[3] >= 0.9],
+                    [c for c in candidatos if c[2] in (c[1], c[1] + 1) and c[3] >= 0.5]):
+        if aceitos:
+            return max(aceitos, key=lambda c: c[1])[0]
+    return next((s for s in SEPARADORES if not any(s in linha for linha in linhas)), ",")
 
-    separador = None
-    linhas = [linha for linha in conteudo.splitlines() if linha.strip()]
-    if len(linhas) > 1:
+
+def ler_amostra(caminho, n_bytes: int = 65_536) -> tuple[str, str, str]:
+    """Lê o início do arquivo e devolve (texto, separador, encoding)."""
+    caminho = Path(caminho)
+    amostra = _ler_bytes(caminho, n_bytes)
+    encoding = detectar_encoding(amostra)
+    texto = codecs.getincrementaldecoder(encoding)().decode(amostra, final=False)
+    linhas = texto.splitlines()
+    if len(amostra) == n_bytes and len(linhas) > 1:
+        linhas = linhas[:-1]  # a última linha provavelmente foi cortada
+    return texto, detectar_separador(linhas), encoding
+
+
+def _decimal_virgula(texto: str, separador: str) -> bool:
+    """True se a amostra traz números com vírgula decimal fora de aspas (1,5 · 3.188,44)."""
+    if separador == ",":
+        return False
+    linhas = texto.splitlines()[1:200]
+    numero = re.compile(r"\s*[-+]?\d[\d.]*,\d+\s*")
+    for registro in csv.reader(linhas, delimiter=separador):
+        if any(numero.fullmatch(campo) for campo in registro):
+            return True
+    return False
+
+
+def _colunas_pontuadas(texto: str, separador: str) -> list[int]:
+    """Posições de colunas com números pontuados que não são milhar (05.03.2024, 1.2.3, IPs).
+
+    Com thousands=".", o pandas leria esses valores como inteiros (5032024);
+    por isso essas colunas são lidas como texto.
+    """
+    pontuado = re.compile(r"\s*[-+]?\d+(\.\d+)+\s*")
+    milhar = re.compile(r"\s*[-+]?[1-9]\d{0,2}(\.\d{3})+(,\d+)?\s*")
+    posicoes = set()
+    for registro in csv.reader(texto.splitlines()[1:200], delimiter=separador):
+        posicoes.update(i for i, campo in enumerate(registro)
+                        if pontuado.fullmatch(campo) and not milhar.fullmatch(campo))
+    return sorted(posicoes)
+
+
+def _ler_csv(caminho: Path, parametros: dict) -> tuple[pd.DataFrame, list[int], bool]:
+    """pd.read_csv que, diante de linhas malformadas, relê ignorando-as.
+
+    Devolve (df, números das linhas ignoradas, se algum campo foi descartado).
+    O descarte acontece quando a 1ª linha de dados tem um campo a mais que o
+    cabeçalho: com index_col=False o pandas corta esse campo em silêncio (só
+    emite um ParserWarning). Quando há linhas ignoradas, `parametros` ganha
+    on_bad_lines="skip" para o notebook repetir a leitura.
+    """
+    # O pandas 2.1+ avisa com ParserWarning; o 2.0 escreve no stderr. Os dois são capturados.
+    stderr = io.StringIO()
+    with warnings.catch_warnings(record=True) as capturados, contextlib.redirect_stderr(stderr):
+        warnings.simplefilter("always", pd.errors.ParserWarning)
         try:
-            separador = csv.Sniffer().sniff("\n".join(linhas[:20]), delimiters=",;\t|").delimiter
-        except csv.Error:
-            # Fallback: o separador que mais aparece na primeira linha.
-            cabecalho = linhas[0]
-            separador = max(",;\t|", key=cabecalho.count)
-            if cabecalho.count(separador) == 0:
-                separador = ","
-    return conteudo, separador or ",", encoding
+            df = pd.read_csv(caminho, **parametros)
+        except pd.errors.ParserError:
+            df = pd.read_csv(caminho, **parametros, on_bad_lines="warn")
+            parametros["on_bad_lines"] = "skip"
+    for aviso in capturados:  # outros avisos seguem adiante
+        if not issubclass(aviso.category, pd.errors.ParserWarning):
+            warnings.warn_explicit(aviso.message, aviso.category, aviso.filename, aviso.lineno)
+    mensagens = " ".join([str(aviso.message) for aviso in capturados] + [stderr.getvalue()])
+    linhas = [int(n) for n in re.findall(r"Skipping line (\d+)", mensagens)]
+    return df, linhas, "Length of header or names does not match" in mensagens
 
 
-def carregar_csv(caminho: str | Path, separador: str | None = None,
-                 encoding: str | None = None) -> tuple[pd.DataFrame, str, str]:
-    """Lê o CSV inferindo separador e encoding quando não informados."""
+def _avisos_nomes_do_pandas(df: pd.DataFrame, texto: str, separador: str) -> list[str]:
+    """Aviso para nomes repetidos ou vazios que o pandas trocou ('dup' → 'dup.1', '' → 'Unnamed: 2').
+
+    As colunas `Unnamed` 100% vazias ficam de fora: padronizar_colunas remove e avisa.
+    O índice salvo por df.to_csv() também: o perfil já o reconhece.
+    """
+    primeira = next((linha for linha in texto.splitlines() if linha.strip()), "")
+    cabecalho = next(csv.reader([primeira], delimiter=separador), [])
+    if len(cabecalho) != df.shape[1]:
+        return []
+    trocas = [f"{original!r} → {nome!r}" if original.strip() else f"(sem nome) → {nome!r}"
+              for posicao, (original, nome) in enumerate(zip(cabecalho, df.columns))
+              if original != nome
+              and not (str(nome).startswith("Unnamed: ") and df.iloc[:, posicao].isna().all())
+              and not (posicao == 0 and _indice_exportado(str(nome), df.iloc[:, 0].dropna()))]
+    if not trocas:
+        return []
+    return [f"Nomes de coluna repetidos ou vazios no cabeçalho foram trocados: {'; '.join(trocas)}."]
+
+
+def resolver_separador(separador: str) -> str:
+    """Aceita apelidos (\\t, tab) e exige um único caractere."""
+    resolvido = APELIDOS_SEPARADOR.get(separador.lower(), separador) if len(separador) > 1 else separador
+    if len(resolvido) != 1:
+        raise ErroLeitura(f"Separador inválido: {separador!r}. Use um único caractere "
+                          "(',', ';', '|') ou tab.")
+    return resolvido
+
+
+def carregar_csv(caminho, separador: str | None = None, encoding: str | None = None,
+                 decimal: str | None = None) -> Leitura:
+    """Lê o CSV detectando o que não foi informado. Lança ErroLeitura em pt-BR."""
     caminho = Path(caminho).expanduser()
     if not caminho.exists():
         raise FileNotFoundError(f"Arquivo não encontrado: {caminho}")
-
-    _, sep_detectado, enc_detectado = ler_amostra(caminho)
-    sep_final = separador or sep_detectado
-    enc_final = encoding or enc_detectado
-
-    df = None
-    for enc in [enc_final, "utf-8-sig", "utf-8", "latin-1"]:
+    if caminho.is_dir():
+        raise ErroLeitura(f"{caminho} é uma pasta, não um arquivo CSV.")
+    if caminho.stat().st_size == 0:
+        raise ErroLeitura(f"O arquivo {caminho.name} está vazio (0 bytes).")
+    if separador is not None:
+        separador = resolver_separador(separador)
+    if encoding:
         try:
-            df = pd.read_csv(caminho, sep=sep_final, encoding=enc, low_memory=False)
-            enc_final = enc
-            break
-        except (UnicodeDecodeError, UnicodeError, pd.errors.ParserError):
-            continue
-    if df is None:
-        # Último recurso: leitura tolerante, mantendo o que der.
-        df = pd.read_csv(caminho, sep=sep_final, encoding="utf-8", errors="replace",
-                         low_memory=False)
-
-    df.columns = [str(c).strip() for c in df.columns]
-    df = df.loc[:, [c for c in df.columns if c]]
-    return df, sep_final, enc_final
-
-
-def normalizar_para_numerico(serie: pd.Series) -> pd.Series:
-    """Converte texto em número aceitando moeda e separadores milhar.
-
-    Trata "1.234,56", "1,234.56", "R$ 1.234", "+12%" etc. É usada tanto na
-    detecção de tipos quanto dentro do notebook gerado.
-    """
-    txt = serie.astype("string").str.strip()
-    txt = txt.str.replace(r"\s+", "", regex=True)
-    txt = txt.str.replace(r"[^0-9,.\-+eE]", "", regex=True)
-
-    tem_ponto = txt.str.contains(".", regex=False)
-    tem_virgula = txt.str.contains(",", regex=False)
-
-    so_virgula = tem_virgula & ~tem_ponto
-    txt = txt.mask(so_virgula, txt.str.replace(",", ".", regex=False))
-
-    ambos = tem_ponto & tem_virgula
-    # O separador decimal é o último a aparecer na string.
-    ponto_milhar = ambos & (txt.str.rfind(".") < txt.str.rfind(","))
-    txt = txt.mask(ponto_milhar, txt.str.replace(".", "", regex=False)
-                                  .str.replace(",", ".", regex=False))
-    virgula_milhar = ambos & (txt.str.rfind(".") > txt.str.rfind(","))
-    txt = txt.mask(virgula_milhar, txt.str.replace(",", "", regex=False))
-
-    return pd.to_numeric(txt, errors="coerce")
-
-
-def _para_data(serie: pd.Series) -> pd.Series:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        try:
-            return pd.to_datetime(serie, errors="coerce", format="mixed", dayfirst=True)
-        except (ValueError, TypeError):
-            return pd.to_datetime(serie, errors="coerce", dayfirst=True)
-
-
-def _datas_plausiveis(convertida: pd.Series) -> bool:
-    """Filtro contra falsos positivos de data.
-
-    Números como texto ("100001") são interpretados pelo pandas como nanossegundos
-    desde 1970. Uma data de verdade tem ano a partir de 1971 e no máximo o ano
-    corrente mais um.
-    """
-    validos = convertida.dropna()
-    if validos.empty:
-        return False
+            "".encode(encoding)  # LookupError também para codecs que não são de texto (hex, zlib)
+        except LookupError:
+            raise ErroLeitura(f"Encoding desconhecido: {encoding!r}. "
+                              "Exemplos válidos: utf-8, cp1252, latin-1.") from None
     try:
-        ano_min = int(validos.dt.year.min())
-        ano_max = int(validos.dt.year.max())
-    except (AttributeError, TypeError, ValueError):
-        return False
-    return ano_min >= 1971 and ano_max <= pd.Timestamp.now().year + 2
+        texto, sep_detectado, enc_detectado = ler_amostra(caminho)
+    except (OSError, EOFError, zipfile.BadZipFile, lzma.LZMAError) as erro:
+        raise ErroLeitura(f"Não foi possível abrir {caminho.name}: {erro}") from None
+
+    parametros = {"sep": separador or sep_detectado, "encoding": encoding or enc_detectado}
+    decimal = decimal or ("," if _decimal_virgula(texto, parametros["sep"]) else ".")
+    if decimal == ",":
+        parametros.update(decimal=",", thousands=".")
+        pontuadas = _colunas_pontuadas(texto, parametros["sep"])
+        if pontuadas:
+            parametros["dtype"] = {posicao: "str" for posicao in pontuadas}
+    compressao = COMPRESSOES.get(caminho.suffix.lower())
+    if compressao:
+        parametros["compression"] = compressao
+    # index_col=False impede o pandas de usar a 1ª coluna como índice quando as
+    # linhas têm um campo a mais que o cabeçalho.
+    parametros.update(index_col=False, low_memory=False)
+
+    avisos = []
+    tentativas = [encoding] if encoding else list(dict.fromkeys(
+        [enc_detectado, "utf-8", "cp1252", "latin-1"]))
+    for tentativa in tentativas:
+        parametros["encoding"] = tentativa
+        try:
+            df, linhas_ruins, campo_descartado = _ler_csv(caminho, parametros)
+            break
+        except UnicodeDecodeError:
+            if encoding:
+                raise ErroLeitura(f"O arquivo não está em {encoding}. Rode sem --encoding "
+                                  "para detectar automaticamente.") from None
+        except pd.errors.EmptyDataError:
+            raise ErroLeitura(f"O arquivo {caminho.name} não tem colunas "
+                              "(vazio ou só linhas em branco).") from None
+        except pd.errors.ParserError as erro:
+            raise ErroLeitura(f"Não foi possível interpretar o CSV: {erro}") from None
+    if tentativa != enc_detectado and not encoding:
+        avisos.append(f"O início do arquivo parecia {enc_detectado}, mas há bytes inválidos "
+                      f"adiante: lido como {tentativa}.")
+    if "on_bad_lines" in parametros and not linhas_ruins:
+        avisos.append("Linhas malformadas (campos a mais) foram ignoradas.")
+    if linhas_ruins:
+        lista = ", ".join(str(n) for n in linhas_ruins[:10])
+        avisos.append(f"{plural(len(linhas_ruins), 'linha malformada ignorada', 'linhas malformadas ignoradas')} "
+                      f"(campos a mais; {'linha' if len(linhas_ruins) == 1 else 'linhas'} {lista}"
+                      f"{'...' if len(linhas_ruins) > 10 else ''}).")
+
+    if campo_descartado:
+        avisos.append("A 1ª linha de dados tem um campo a mais que o cabeçalho: o último campo "
+                      "dela e das linhas na mesma situação foi descartado. Confira o separador (--sep).")
+    avisos += _avisos_nomes_do_pandas(df, texto, parametros["sep"])
+
+    df, avisos_colunas = padronizar_colunas(df)
+    avisos += avisos_colunas
+    if df.shape[1] == 0:
+        raise ErroLeitura(f"O arquivo {caminho.name} não tem colunas com dados.")
+    if df.empty:
+        raise ErroLeitura(f"O arquivo {caminho.name} só tem o cabeçalho, sem linhas de dados.")
+    return Leitura(df=df, parametros=parametros, avisos=avisos)
 
 
-def _letras_presentes(serie: pd.Series) -> set[str]:
-    """Todas as letras que aparecem nos valores textuais da coluna."""
-    letras = serie.astype("string").str.replace(r"[^A-Za-z]", "", regex=True)
-    return set("".join(letras.dropna().tolist()).upper())
+# --------------------------------------------------------------------- perfil
+
+def _e_texto(serie: pd.Series) -> bool:
+    return pd.api.types.is_object_dtype(serie) or pd.api.types.is_string_dtype(serie)
 
 
-def _taxa_de_conversao(original: pd.Series, convertido: pd.Series) -> float:
-    validos = original.notna().sum()
-    return 0.0 if validos == 0 else (convertido.notna().sum() / validos)
+def _classificar(serie: pd.Series) -> tuple[str, str | None]:
+    """Devolve (tipo, formato de data). A decisão usa uma amostra de até 5.000 valores."""
+    nao_nulos = serie.dropna()
+    if nao_nulos.empty or pd.api.types.is_bool_dtype(serie):
+        return CATEGORICA, None
+    if pd.api.types.is_numeric_dtype(serie) and not pd.api.types.is_complex_dtype(serie):
+        return NUMERICA, None
+    if pd.api.types.is_datetime64_any_dtype(serie):
+        return DATA, None
+    if not _e_texto(serie):
+        return CATEGORICA, None
+
+    amostra = nao_nulos
+    if len(amostra) > AMOSTRA_CLASSIFICACAO:
+        amostra = amostra.sample(AMOSTRA_CLASSIFICACAO, random_state=0)
+    amostra = amostra.astype(str).str.strip()
+    amostra = amostra[amostra != ""]
+    if amostra.empty:
+        return CATEGORICA, None
+
+    formato = detectar_formato_data(amostra)
+    if formato:
+        return DATA, formato
+    if normalizar_para_numerico(amostra).notna().mean() >= LIMITE_CONVERSAO_NUMERICA:
+        return NUMERICA, None
+    n_unicos = nao_nulos.nunique()
+    if n_unicos <= LIMITE_CATEGORICAS or n_unicos / len(nao_nulos) <= 0.5:
+        return CATEGORICA, None
+    return TEXTO, None
 
 
 def classificar_coluna(serie: pd.Series) -> str:
     """Retorna NUMERICA, CATEGORICA, DATA ou TEXTO para uma série."""
-    nao_nulos = serie.dropna()
-    if nao_nulos.empty:
-        return CATEGORICA
-
-    if pd.api.types.is_bool_dtype(serie):
-        return CATEGORICA
-
-    if pd.api.types.is_numeric_dtype(serie) and not pd.api.types.is_complex_dtype(serie):
-        return NUMERICA
-
-    if pd.api.types.is_datetime64_any_dtype(serie):
-        return DATA
-
-    if not (pd.api.types.is_object_dtype(serie) or pd.api.types.is_string_dtype(serie)):
-        return NUMERICA
-
-    nulos = len(nao_nulos)
-    n_unicos = nao_nulos.nunique()
-
-    as_datas = _para_data(serie)
-    taxa_data = _taxa_de_conversao(serie, as_datas)
-    nome_sugere_data = any(p in serie.name.lower() for p in PADRAO_NOME_DATA)
-    if _datas_plausiveis(as_datas) and (
-        taxa_data >= LIMITE_CONVERSAO_DATA
-        or (nome_sugere_data and taxa_data >= 0.5)
-    ):
-        return DATA
-
-    como_numero = normalizar_para_numerico(serie)
-    letras = _letras_presentes(serie)
-    if (_taxa_de_conversao(serie, como_numero) >= LIMITE_CONVERSAO_NUMERICA
-            and letras <= LETRAS_MONETARIAS):
-        return NUMERICA
-
-    if n_unicos <= LIMITE_CATEGORICAS or n_unicos / nulos <= 0.5:
-        return CATEGORICA
-    return TEXTO
+    return _classificar(serie)[0]
 
 
-def perfilar(df: pd.DataFrame) -> list[ColunaInfo]:
-    """Devolve o perfil de todas as colunas do DataFrame."""
+def _indice_exportado(nome: str, nao_nulos: pd.Series) -> bool:
+    """`Unnamed: N` com inteiros únicos e consecutivos: índice salvo por df.to_csv()."""
+    if not re.fullmatch(r"Unnamed: \d+", nome) or not pd.api.types.is_integer_dtype(nao_nulos):
+        return False
+    return nao_nulos.is_unique and bool((nao_nulos.sort_values().diff().dropna() == 1).all())
+
+
+def perfilar(df: pd.DataFrame, tipos: dict[str, str] | None = None) -> list[ColunaInfo]:
+    """Perfil de todas as colunas. `tipos` fixa o tipo de colunas já classificadas."""
     perfil = []
     for nome in df.columns:
         serie = df[nome]
+        if tipos and nome in tipos:
+            tipo, formato = tipos[nome], None
+        else:
+            tipo, formato = _classificar(serie)
         nao_nulos = serie.dropna()
+        n_unicos = int(nao_nulos.nunique())
+        codigo = False
+        if tipo == TEXTO and n_unicos == len(nao_nulos) and _e_texto(serie):
+            texto = nao_nulos.astype(str)
+            codigo = (not texto.str.contains(r"\s").any()) and texto.str.len().median() <= 40
         perfil.append(ColunaInfo(
             nome=str(nome),
-            tipo=classificar_coluna(serie),
+            tipo=tipo,
             total=int(len(serie)),
-            nulos=int(serie.isna().sum()),
-            n_unicos=int(nao_nulos.nunique()),
+            nulos=int(len(serie) - len(nao_nulos)),
+            n_unicos=n_unicos,
             exemplos=[str(v) for v in nao_nulos.unique()[:3]],
+            formato_data=formato,
+            parece_codigo=bool(codigo),
+            indice_exportado=_indice_exportado(str(nome), nao_nulos),
         ))
     return perfil
+
+
+def avisos_do_perfil(df: pd.DataFrame, perfil: list[ColunaInfo]) -> list[str]:
+    """Avisos sobre suposições feitas na classificação (datas ambíguas, índice exportado)."""
+    avisos = []
+    for info in perfil:
+        if info.indice_exportado:
+            avisos.append(f"{info.nome} parece índice exportado (0, 1, 2...): tratada como "
+                          "identificador, fora das análises.")
+        if info.formato_data and info.formato_data.startswith("%d"):
+            dias = converter_datas(df[info.nome], info.formato_data).dt.day
+            if dias.notna().any() and dias.max() <= 12:
+                avisos.append(f"Datas ambíguas em {info.nome}: todos os dias são <= 12, "
+                              "interpretadas como dia/mês (padrão brasileiro).")
+    return avisos

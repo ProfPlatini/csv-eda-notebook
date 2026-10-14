@@ -1,41 +1,50 @@
-"""Geração das células de código do notebook de análise exploratória.
+"""Geração das células do notebook de análise exploratória.
 
 O notebook é montado *a partir do conteúdo real do CSV*: as células citam os
-nomes das colunas que existem, mostram apenas os gráficos que fazem sentido
-para os tipos detectados e nunca inventam variáveis.
+nomes das colunas que existem, mostram apenas as análises que fazem sentido
+para os tipos detectados e nunca inventam variáveis. Todo nome de coluna entra
+no código com repr(), então aspas, barras e acentos não quebram as células.
 """
 
 from __future__ import annotations
 
-import inspect
+import os
+import re
 import textwrap
+from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 
+import numpy as np
 import pandas as pd
 
-from .loader import (
-    CATEGORICA,
-    DATA,
-    NUMERICA,
-    TEXTO,
-    ColunaInfo,
-    normalizar_para_numerico,
+from . import apoio
+from .apoio import (
+    chave_normalizada,
+    checar_qualidade,
+    converter_datas,
+    detectar_decimal,
+    eta_quadrado,
+    v_de_cramer,
 )
-
-# --------------------------------------------------------------------------- #
-# Configuração da geração
-# --------------------------------------------------------------------------- #
+from .loader import CATEGORICA, DATA, NUMERICA, TEXTO, ColunaInfo, perfilar
+from .resumo import MIN_GRUPO_TAXA, NOME_PERIODO, md_codigo
 
 MAX_NUMERICAS_GRAFICO = 6
 MAX_CATEGORICAS_GRAFICO = 4
-MAX_CATEGORICAS_AGRUPAR = 3
-MAX_DATAS = 2
-MAX_COMBINACOES = 3
+MAX_CATEGORICAS_AGRUPAR = 8
 MAX_COLUNAS_DESCRIBE = 25
+MAX_CORRELACAO = 15
+MAX_FREQUENCIAS = 12
+MAX_TEXTO = 4
+MAX_DATAS = 2
+MAX_PARES = 3
 LIMITE_CATEGORIAS_GRAFICO = 20
 LIMITE_CATEGORIAS_AGRUPAR = 8
-TOP_N_CATEGORIAS = 15
+MIN_GRUPO = 5           # registros mínimos para um grupo entrar nas comparações
+MIN_CORRELACAO = 10     # linhas mínimas para calcular uma correlação
+NOMES_SEPARADOR = {",": "vírgula", ";": "ponto e vírgula", "\t": "tabulação", "|": "barra vertical"}
+ROTULOS_TIPO = {NUMERICA: "numérica", CATEGORICA: "categórica", DATA: "data", TEXTO: "texto livre"}
 
 
 @dataclass
@@ -45,104 +54,45 @@ class Opcoes:
     caminho_csv: Path
     saida: Path
     titulo: str = "Análise exploratória de dados"
-    separador: str = ","
-    encoding: str = "utf-8"
+    leitura_parametros: dict = field(default_factory=dict)
     alvo: str | None = None
     max_numericas_grafico: int = MAX_NUMERICAS_GRAFICO
     max_categoricas_grafico: int = MAX_CATEGORICAS_GRAFICO
+    avisos_leitura: list[str] = field(default_factory=list)
 
 
 @dataclass
 class Selecao:
-    """Colunas escolhidas para cada tipo de análise."""
+    """Colunas escolhidas para cada bloco de análise."""
 
-    numericas: list[str] = field(default_factory=list)
+    numericas: list[str] = field(default_factory=list)            # histogramas e boxplots
     numericas_describe: list[str] = field(default_factory=list)
     numericas_correlacao: list[str] = field(default_factory=list)
-    categorias: list[str] = field(default_factory=list)
+    categorias: list[str] = field(default_factory=list)           # tabelas de frequência
     categorias_barra: list[str] = field(default_factory=list)
-    categorias_agrupar: list[str] = field(default_factory=list)
+    categorias_agrupar: list[str] = field(default_factory=list)   # 2 a 8 grupos
     texto: list[str] = field(default_factory=list)
     datas: list[str] = field(default_factory=list)
-    combos_num_cat: list[tuple[str, str]] = field(default_factory=list)
+    combos_num_cat: list[tuple[str, str]] = field(default_factory=list)  # (categoria, numérica)
     combos_cat_cat: list[tuple[str, str]] = field(default_factory=list)
     serie_temporal: list[str] = field(default_factory=list)
-    para_numerico: list[str] = field(default_factory=list)
+    para_numerico: list[str] = field(default_factory=list)        # numéricas que estão como texto
+    binarias: list[str] = field(default_factory=list)
+    regras: dict[str, str] = field(default_factory=dict)          # periodicidade por coluna de data
+    alvo: str | None = None
+    alvo_classes: bool = False        # True: alvo binário/categórico; False: numérico
+    classe_positiva: object = None
+    alvo_categorias: list[str] = field(default_factory=list)
+    alvo_numericas: list[str] = field(default_factory=list)
 
 
-def _utilizaveis(perfil: list[ColunaInfo], tipo: str) -> list[ColunaInfo]:
-    return [
-        c for c in perfil
-        if c.tipo == tipo and c.nao_nulos > 0 and not c.identificador and c.n_unicos > 0
-    ]
+# --------------------------------------------------------------------------- #
+# Escolha das colunas
+# --------------------------------------------------------------------------- #
 
-
-def selecionar_colunas(df: pd.DataFrame, perfil: list[ColunaInfo],
-                       opcoes: Opcoes) -> Selecao:
-    """Decide quais colunas entram em cada bloco de análise."""
-    sel = Selecao()
-
-    numericas = _utilizaveis(perfil, NUMERICA)
-    # Variáveis contínuas primeiro: são as que mais rendem em histograma.
-    ordenadas = sorted(numericas, key=lambda c: (c.n_unicos <= 20, -c.nao_nulos))
-    sel.numericas = [c.nome for c in ordenadas[: opcoes.max_numericas_grafico]]
-    sel.numericas_describe = [c.nome for c in numericas[:MAX_COLUNAS_DESCRIBE]]
-    sel.numericas_correlacao = sel.numericas[:15]
-    sel.para_numerico = [
-        c.nome for c in numericas
-        if not pd.api.types.is_numeric_dtype(df[c.nome])
-    ]
-
-    categorias = _utilizaveis(perfil, CATEGORICA)
-    sel.categorias = [c.nome for c in categorias]
-    com_poucas = [c for c in categorias if 2 <= c.n_unicos <= LIMITE_CATEGORIAS_GRAFICO]
-    sel.categorias_barra = [
-        c.nome for c in sorted(com_poucas, key=lambda c: (c.n_unicos > 8, -c.nao_nulos))
-    ][: opcoes.max_categoricas_grafico]
-    candidatos_agrupar = [
-        c for c in categorias if 2 <= c.n_unicos <= LIMITE_CATEGORIAS_AGRUPAR
-    ]
-    candidatos_agrupar.sort(
-        key=lambda c: (c.n_unicos > LIMITE_CATEGORIAS_AGRUPAR, -c.nao_nulos))
-    sel.categorias_agrupar = [c.nome for c in candidatos_agrupar][:MAX_CATEGORICAS_AGRUPAR]
-
-    sel.texto = [c.nome for c in _utilizaveis(perfil, TEXTO)][:4]
-
-    # Só entram colunas de data que realmente convertem para datas válidas.
-    datas = []
-    for coluna in _utilizaveis(perfil, DATA):
-        convertida = pd.to_datetime(df[coluna.nome], errors="coerce", format="mixed",
-                                    dayfirst=True)
-        validos = int(convertida.notna().sum())
-        if validos >= max(10, 0.5 * coluna.nao_nulos) and convertida.nunique() >= 5:
-            datas.append(coluna.nome)
-        if len(datas) >= MAX_DATAS:
-            break
-    sel.datas = datas
-
-    for categoria in sel.categorias_agrupar:
-        for numerica in sel.numericas:
-            if len(sel.combos_num_cat) >= MAX_COMBINACOES:
-                break
-            sel.combos_num_cat.append((categoria, numerica))
-    sel.combos_num_cat = sel.combos_num_cat[:MAX_COMBINACOES]
-
-    for i, a in enumerate(sel.categorias_agrupar):
-        for b in sel.categorias_agrupar[i + 1:]:
-            sel.combos_cat_cat.append((a, b))
-    sel.combos_cat_cat = sel.combos_cat_cat[:1]
-
-    sel.serie_temporal = sel.numericas[:3]
-    return sel
-
-
-def _regra_resample(df: pd.DataFrame, colunas_data: list[str]) -> str:
-    """Escolhe a periodicidade da série temporal olhando o período coberto."""
-    series = [pd.to_datetime(df[c], errors="coerce").dropna() for c in colunas_data]
-    validas = [s for s in series if not s.empty]
-    if not validas:
-        return "MS"
-    dias = (max(s.max() for s in validas) - min(s.min() for s in validas)).days
+def _regra_resample(datas: pd.Series) -> str:
+    """Periodicidade da série temporal conforme o período coberto."""
+    dias = (datas.max() - datas.min()).days
     if dias <= 45:
         return "D"
     if dias <= 200:
@@ -154,684 +104,928 @@ def _regra_resample(df: pd.DataFrame, colunas_data: list[str]) -> str:
     return "YS"
 
 
+def _classe_positiva(serie: pd.Series):
+    """Classe cuja taxa é comparada entre os grupos.
+
+    Com duas classes: 1, True, sim/yes/s; sem nenhuma delas, a menos frequente.
+    Com mais: a menos frequente entre as que têm ao menos MIN_GRUPO_TAXA
+    registros (uma grafia rara como "sudeste" não serve) ou, se nenhuma tem, a
+    mais frequente.
+    """
+    contagem = serie.value_counts()
+    if len(contagem) == 2:
+        for valor in contagem.index:
+            if chave_normalizada(valor) in {"1", "1.0", "true", "sim", "s", "yes", "y"}:
+                return _nativo(valor)
+    else:
+        grandes = contagem[contagem >= MIN_GRUPO_TAXA]
+        contagem = grandes if len(grandes) else contagem.head(1)
+    menor = sorted(contagem.items(), key=lambda item: (item[1], str(item[0])))[0][0]
+    return _nativo(menor)
+
+
+def _nativo(valor):
+    """Converte escalares do numpy em tipos do Python (para o repr ficar limpo)."""
+    return valor.item() if isinstance(valor, np.generic) else valor
+
+
+def _melhores_pares(candidatos: list[tuple[float, str, str]], limite: int) -> list[tuple[str, str]]:
+    """Os pares de maior pontuação, cada coluna aparecendo no máximo duas vezes."""
+    usos: Counter = Counter()
+    escolhidos = []
+    for _, a, b in sorted(candidatos, key=lambda c: -c[0]):
+        if usos[a] < 2 and usos[b] < 2:
+            escolhidos.append((a, b))
+            usos.update([a, b])
+        if len(escolhidos) == limite:
+            break
+    return escolhidos
+
+
+def selecionar_colunas(df: pd.DataFrame, perfil: list[ColunaInfo], opcoes: Opcoes) -> Selecao:
+    """Decide quais colunas entram em cada bloco de análise (df já limpo)."""
+    sel = Selecao()
+    uteis = [c for c in perfil if c.nao_nulos > 0 and not c.identificador]
+    numericas = [c for c in uteis if c.tipo == NUMERICA]
+    continuas = [c for c in numericas if c.n_unicos > 2]    # nem binária nem constante
+    categoricas = [c for c in uteis if c.tipo == CATEGORICA]
+
+    sel.binarias = [c.nome for c in numericas if c.binaria]
+    # Variáveis com muitos valores distintos primeiro: são as que mais rendem em histograma.
+    por_variedade = sorted(continuas, key=lambda c: (c.n_unicos <= 20, -c.nao_nulos))
+    sel.numericas = [c.nome for c in por_variedade[: opcoes.max_numericas_grafico]]
+    sel.numericas_describe = [c.nome for c in numericas if not c.binaria][:MAX_COLUNAS_DESCRIBE]
+    sel.numericas_correlacao = [
+        c.nome for c in continuas + [c for c in numericas if c.binaria] if c.nao_nulos >= MIN_CORRELACAO
+    ][:MAX_CORRELACAO]
+    sel.para_numerico = [c.nome for c in numericas if not pd.api.types.is_numeric_dtype(df[c.nome])]
+
+    sel.categorias = ([c.nome for c in categoricas] + sel.binarias)[:MAX_FREQUENCIAS]
+    poucas = [c for c in categoricas if 2 <= c.n_unicos <= LIMITE_CATEGORIAS_GRAFICO]
+    poucas.sort(key=lambda c: (c.n_unicos > 8, -c.nao_nulos))
+    sel.categorias_barra = ([c.nome for c in poucas] + sel.binarias)[: opcoes.max_categoricas_grafico]
+    agrupaveis = [c for c in categoricas if 2 <= c.n_unicos <= LIMITE_CATEGORIAS_AGRUPAR]
+    agrupaveis.sort(key=lambda c: -c.nao_nulos)
+    sel.categorias_agrupar = [c.nome for c in agrupaveis][:MAX_CATEGORICAS_AGRUPAR]
+    sel.texto = [c.nome for c in uteis if c.tipo == TEXTO][:MAX_TEXTO]
+
+    for info in (c for c in uteis if c.tipo == DATA):
+        datas = df[info.nome]
+        if not pd.api.types.is_datetime64_any_dtype(datas):
+            if not info.formato_data:
+                continue
+            datas = converter_datas(datas, info.formato_data)
+        datas = datas.dropna()
+        if len(datas) >= 10 and datas.nunique() >= 5 and len(sel.datas) < MAX_DATAS:
+            sel.datas.append(info.nome)
+            sel.regras[info.nome] = _regra_resample(datas)
+
+    # Numérica x categoria: pares em que os grupos mais diferem (eta²).
+    nomes_continuas = [c.nome for c in continuas]
+    candidatos = [(eta, cat, num) for cat in sel.categorias_agrupar for num in nomes_continuas
+                  if (eta := eta_quadrado(df, cat, num)) is not None]
+    sel.combos_num_cat = _melhores_pares(candidatos, MAX_PARES)
+    # Categoria x categoria: o par mais associado (V de Cramér).
+    candidatos = [(v, a, b) for i, a in enumerate(sel.categorias_agrupar)
+                  for b in sel.categorias_agrupar[i + 1:] if (v := v_de_cramer(df, a, b)) is not None]
+    sel.combos_cat_cat = _melhores_pares(candidatos, 1)
+
+    alvo = opcoes.alvo
+    principais = [c.nome for c in por_variedade]
+    if alvo in principais:  # o alvo numérico aparece primeiro na série temporal
+        principais.remove(alvo)
+        principais.insert(0, alvo)
+    sel.serie_temporal = principais[:3]
+    if alvo:
+        _selecionar_alvo(df, perfil, sel, alvo, nomes_continuas)
+    return sel
+
+
+def _selecionar_alvo(df, perfil, sel: Selecao, alvo: str, continuas: list[str]) -> None:
+    info = next(c for c in perfil if c.nome == alvo)
+    sel.alvo = alvo
+    sel.alvo_classes = info.tipo == CATEGORICA or info.binaria
+    outras_categorias = [c for c in sel.categorias_agrupar if c != alvo]
+    outras_numericas = [c for c in continuas if c != alvo]
+    if sel.alvo_classes:
+        sel.classe_positiva = _classe_positiva(df[alvo])
+        pontuadas = [(v, c) for c in outras_categorias if (v := v_de_cramer(df, alvo, c)) is not None]
+        sel.alvo_categorias = [c for _, c in sorted(pontuadas, key=lambda p: -p[0])][:2]
+        pontuadas = [(e, c) for c in outras_numericas if (e := eta_quadrado(df, alvo, c)) is not None]
+        sel.alvo_numericas = [c for _, c in sorted(pontuadas, key=lambda p: -p[0])][:3]
+    else:
+        pontuadas = [(e, c) for c in outras_categorias if (e := eta_quadrado(df, c, alvo)) is not None]
+        sel.alvo_categorias = [c for _, c in sorted(pontuadas, key=lambda p: -p[0])][:2]
+        sel.alvo_numericas = [c for c in sel.numericas_correlacao if c != alvo]
+
+
 # --------------------------------------------------------------------------- #
-# Blocos de código reutilizados por várias células
+# Plano de limpeza
 # --------------------------------------------------------------------------- #
 
-BLOCO_HELPERS = '''
-{source_normalizar}
+def coluna_identificadora(df: pd.DataFrame, perfil: list[ColunaInfo]) -> str | None:
+    """Nome de uma coluna que identifica os registros, ignorando linhas repetidas.
 
-# Atalho com o nome curto usado no restante do notebook.
-para_numerico = normalizar_para_numerico
+    Se o id só se repete em linhas idênticas por inteiro, as repetições são o
+    mesmo registro gravado duas vezes, e o id continua valendo como chave.
+    """
+    distintas = df.drop_duplicates()
+    if len(distintas) < len(df):
+        perfil = perfilar(distintas, tipos={c.nome: c.tipo for c in perfil})
+    return next((c.nome for c in perfil if c.identificador), None)
 
 
+def plano_limpeza(df: pd.DataFrame, perfil: list[ColunaInfo], dica_decimal: str | None = None) -> dict:
+    """Plano aplicado por `limpar_dados`, gravado literalmente no notebook."""
+    numericas = {c.nome: detectar_decimal(df[c.nome], dica_decimal) for c in perfil
+                 if c.tipo == NUMERICA and not pd.api.types.is_numeric_dtype(df[c.nome])}
+    datas = {c.nome: c.formato_data for c in perfil if c.tipo == DATA and c.formato_data}
+    texto = [c.nome for c in perfil if c.nome not in numericas and c.nome not in datas
+             and (pd.api.types.is_object_dtype(df[c.nome]) or pd.api.types.is_string_dtype(df[c.nome]))]
+    return {"texto": texto, "numericas": numericas, "datas": datas,
+            "remover_duplicadas": coluna_identificadora(df, perfil) is not None}
+
+
+# --------------------------------------------------------------------------- #
+# Utilitários de texto do código gerado
+# --------------------------------------------------------------------------- #
+
+def _literal(valor) -> str:
+    """repr de listas e dicionários, quebrando em várias linhas quando ficam longos."""
+    texto = repr(valor)
+    if len(texto) <= 88 or not isinstance(valor, (list, dict)):
+        return texto
+    if isinstance(valor, list):
+        return "[\n" + "".join(f"    {item!r},\n" for item in valor) + "]"
+    return "{\n" + "".join(f"    {chave!r}: {item!r},\n" for chave, item in valor.items()) + "}"
+
+
+def _codigo(modelo: str, **valores) -> str:
+    """Troca <<NOME>> pelos valores (evita escapar as chaves do código gerado).
+
+    Numa passada só: um valor que contenha "<<OUTRO>>" não é substituído de novo.
+    """
+    texto = textwrap.dedent(modelo).strip()
+    return re.sub(r"<<([A-Z_]+)>>", lambda m: valores.get(m.group(1), m.group(0)), texto)
+
+
+def _caminho_relativo(opcoes: Opcoes) -> str:
+    """Caminho do CSV relativo à pasta do notebook.
+
+    Fica absoluto quando estão em discos diferentes (Windows) ou distantes
+    demais (mais de 3 níveis acima), caso em que o relativo seria frágil.
+    """
+    csv = Path(opcoes.caminho_csv).resolve()
+    try:
+        relativo = PurePath(os.path.relpath(csv, Path(opcoes.saida).resolve().parent))
+    except ValueError:
+        return csv.as_posix()
+    return relativo.as_posix() if relativo.parts.count("..") <= 3 else csv.as_posix()
+
+
+def _fonte_apoio() -> str:
+    """Código de apoio.py sem a docstring do módulo (começa nos imports)."""
+    fonte = Path(apoio.__file__).read_text(encoding="utf-8")
+    return fonte[fonte.index("\nimport ") + 1:].strip()
+
+
+AJUDANTES_GRAFICOS = '''
 def finalizar(ax, titulo="", xlabel="", ylabel=""):
-    """Padroniza título, rótulos e bordas de um eixo."""
-    if titulo:
-        ax.set_title(titulo, fontsize=12, fontweight="bold", pad=10, loc="left")
+    """Título à esquerda, rótulos dos eixos e sem as bordas de cima e da direita."""
+    ax.set_title(titulo, fontsize=12, fontweight="bold", loc="left", pad=10)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     for lado in ("top", "right"):
         ax.spines[lado].set_visible(False)
-    return ax
 
 
 def exibir():
-    """Encaixa os elementos e mostra a figura."""
+    """Ajusta o espaçamento e mostra a figura."""
     plt.tight_layout()
     plt.show()
 
 
-def formatar_valor(valor):
-    """Número no padrão brasileiro (milhar com ponto, decimal com vírgula)."""
-    return format(valor, ",.2f").replace(",", "@").replace(".", ",").replace("@", ".")
-'''.lstrip()
+def formatar_eixo_datas(ax):
+    """Datas do eixo x em formato numérico curto (dd/mm, mm/aaaa, aaaa)."""
+    localizador = mdates.AutoDateLocator()
+    ax.xaxis.set_major_locator(localizador)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(
+        localizador,
+        formats=["%Y", "%m/%Y", "%d/%m", "%H:%M", "%H:%M", "%S"],
+        zero_formats=["", "%Y", "%m/%Y", "%d/%m", "%H:%M", "%H:%M"],
+        offset_formats=["", "%Y", "%m/%Y", "%d/%m/%Y", "%d/%m/%Y", "%d/%m/%Y %H:%M"],
+    ))
+'''
 
 
-def _helpers() -> str:
-    fonte = textwrap.dedent(inspect.getsource(normalizar_para_numerico)).rstrip()
-    return BLOCO_HELPERS.replace("{source_normalizar}", fonte)
+# --------------------------------------------------------------------------- #
+# Células
+# --------------------------------------------------------------------------- #
 
-
-def _celula_setup(opcoes: Opcoes) -> str:
-    return textwrap.dedent(f'''
-        import warnings
-        warnings.filterwarnings("ignore")
-
+def _celula_configuracao(opcoes: Opcoes, alvo: str | None) -> str:
+    comentario_linhas = ""
+    if opcoes.leitura_parametros.get("on_bad_lines") == "skip":
+        comentario_linhas = ("\n# on_bad_lines='skip': linhas com campos a mais são ignoradas "
+                             "(veja os avisos da leitura).")
+    return _codigo('''
+        %matplotlib inline
         from pathlib import Path
 
+        import matplotlib.dates as mdates
+        import matplotlib.pyplot as plt
         import numpy as np
         import pandas as pd
-        import matplotlib.pyplot as plt
         import seaborn as sns
+        from IPython.display import display
 
         sns.set_theme(style="whitegrid", context="notebook")
         plt.rcParams["figure.dpi"] = 110
-        plt.rcParams["axes.titlesize"] = 12
-
-        pd.set_option("display.max_columns", 100)
+        pd.set_option("display.max_columns", 60)
         pd.set_option("display.width", 160)
         pd.set_option("display.max_colwidth", 80)
 
-        CSV_PATH = Path({str(opcoes.caminho_csv)!r})
-        SEPARADOR = {opcoes.separador!r}
-        ENCODING = {opcoes.encoding!r}
-
-        ALVO = {opcoes.alvo!r}
-    ''').strip()
+        # Caminho do CSV relativo à pasta deste notebook (se mover o notebook, ajuste aqui).
+        CSV_PATH = Path(<<CSV>>)
+        # Parâmetros de leitura detectados na geração do notebook.<<COMENTARIO>>
+        LEITURA = <<LEITURA>>
+        # Variável de interesse (None = nenhuma).
+        ALVO = <<ALVO>>
+    ''', CSV=repr(_caminho_relativo(opcoes)), COMENTARIO=comentario_linhas,
+        LEITURA=_literal(opcoes.leitura_parametros), ALVO=repr(alvo))
 
 
 def _celula_leitura() -> str:
-    return textwrap.dedent('''
-        df_bruto = pd.read_csv(CSV_PATH, sep=SEPARADOR, encoding=ENCODING, low_memory=False)
-        df_bruto.columns = [str(coluna).strip() for coluna in df_bruto.columns]
-        df_bruto = df_bruto.loc[:, [c for c in df_bruto.columns if c]]
-
-        df = df_bruto.copy()
-        print("Dimensoes:", df.shape)
-        df.head(8)
-    ''').strip()
+    return _codigo('''
+        df_bruto, avisos_colunas = padronizar_colunas(pd.read_csv(CSV_PATH, **LEITURA))
+        for aviso in avisos_colunas:
+            print("Aviso:", aviso)
+        print(f"{len(df_bruto)} linhas × {df_bruto.shape[1]} colunas")
+        df_bruto.head()
+    ''')
 
 
-def _celula_tipos() -> str:
-    return textwrap.dedent('''
-        tipos = df.dtypes.astype(str).to_frame("tipo").T
-        print("Tipos por coluna:")
-        tipos
-    ''').strip()
+def _rotulo_tipo(info: ColunaInfo) -> str:
+    if info.nao_nulos == 0:
+        return "vazia"
+    if info.identificador:
+        return "identificador"
+    if info.binaria:
+        return "numérica binária"
+    return ROTULOS_TIPO[info.tipo]
 
 
-def _celula_valores_unicos() -> str:
-    return textwrap.dedent('''
-        unicos = (
-            df.nunique(dropna=True)
-            .to_frame("valores_unicos")
-            .assign(tipo=lambda t: df.dtypes.astype(str))
-        )
-        print("Quantidade de valores distintos por coluna:")
-        unicos.sort_values("valores_unicos")
-    ''').strip()
+def _celula_visao_geral(perfil: list[ColunaInfo]) -> str:
+    tipos = {c.nome: _rotulo_tipo(c) for c in perfil}
+    return _codigo('''
+        # Tipo atribuído na geração: decide em quais análises cada coluna entra.
+        TIPOS = <<TIPOS>>
+
+        visao = pd.DataFrame({
+            "tipo_analise": pd.Series(TIPOS),
+            "tipo_pandas": df_bruto.dtypes.astype(str),
+            "preenchidos": df_bruto.notna().sum(),
+            "distintos": df_bruto.nunique(),
+        }, index=df_bruto.columns)
+        visao
+    ''', TIPOS=_literal(tipos))
 
 
-BLOCO_AUSENTES = textwrap.dedent('''
-    ausentes = pd.DataFrame(
-        {
-            "nulos": df_bruto.isna().sum(),
-            "percentual": df_bruto.isna().mean().mul(100).round(2),
-        }
-    ).sort_values("percentual", ascending=False)
-    print("Colunas com mais valores ausentes:")
-    ausentes[ausentes["nulos"] > 0]
-''').strip()
+def _celula_duplicadas() -> str:
+    return _codigo('''
+        duplicadas = df_bruto.duplicated()
+        print("Linhas idênticas a uma linha anterior:", int(duplicadas.sum()))
+        if duplicadas.any():
+            display(df_bruto[df_bruto.duplicated(keep=False)].head(10))
+    ''')
 
 
-BLOCO_DUPLICADAS = textwrap.dedent('''
-    duplicadas = int(df_bruto.duplicated().sum())
-    print("Linhas duplicadas (exatas):", duplicadas)
-
-    if duplicadas:
-        exemplo = (
-            df_bruto[df_bruto.duplicated(keep=False)]
-            .sort_values(by=list(df_bruto.columns))
-            .head(10)
-        )
-        exemplo
+def _celula_limpeza(plano: dict, identificadora: str | None) -> str:
+    if plano["remover_duplicadas"]:
+        motivo = f"Há coluna identificadora ({identificadora!r}): linhas idênticas são registros repetidos."
     else:
-        print("Nenhuma linha totalmente duplicada.")
-''').strip()
+        motivo = "Sem coluna identificadora: linhas idênticas podem ser registros legítimos."
+    return _codigo('''
+        # Formato de cada coluna de data (códigos de pandas.to_datetime).
+        FORMATOS_DATA = <<DATAS>>
+        # <<MOTIVO>>
+        REMOVER_DUPLICADAS = <<REMOVER>>
+
+        PLANO_LIMPEZA = {
+            "texto": <<TEXTO>>,
+            "numericas": <<NUMERICAS>>,
+            "datas": FORMATOS_DATA,
+            "remover_duplicadas": REMOVER_DUPLICADAS,
+        }
+        df, registro_limpeza = limpar_dados(df_bruto, PLANO_LIMPEZA)
+        for linha in registro_limpeza:
+            print("-", linha)
+        print(f"Linhas: {len(df_bruto)} lidas → {len(df)} na análise")
+    ''', DATAS=_literal(plano["datas"]), MOTIVO=motivo, REMOVER=repr(plano["remover_duplicadas"]),
+        TEXTO=repr(plano["texto"]), NUMERICAS=repr(plano["numericas"]))
 
 
-def _celula_limpeza(sel: Selecao) -> str:
-    """Normaliza textos, datas, números e remove duplicadas."""
-    linhas = ["df_bruto = df.copy()", ""]
-    passos = [
-        ("Espacos nas bordas e strings vazias viram valores ausentes",
-         ['for coluna in df.select_dtypes(include=["object", "string"]).columns:',
-          '    df[coluna] = df[coluna].astype("string").str.strip().replace("", pd.NA)']),
-    ]
-    if sel.para_numerico:
-        lista = ", ".join(repr(c) for c in sel.para_numerico)
-        passos.append((
-            "Numeros que chegaram como texto (moeda, separador de milhar)",
-            [f"CONVERTIDAS = [{lista}]",
-             "for coluna in CONVERTIDAS:",
-             "    antes = df[coluna].notna().sum()",
-             "    df[coluna] = para_numerico(df[coluna])",
-             "    depois = df[coluna].notna().sum()",
-             '    print("  " + coluna + ": " + str(antes) + " -> " + str(depois) +'
-             ' " valores numericos (nao convertidos viraram ausentes)")'],
-        ))
-    if sel.datas:
-        lista = ", ".join(repr(c) for c in sel.datas)
-        passos.append((
-            "Datas convertidas (dayfirst=True por padrao brasileiro)",
-            [f"for coluna in [{lista}]:",
-             '    df[coluna] = pd.to_datetime(df[coluna], errors="coerce", dayfirst=True)'],
-        ))
-    passos.append((
-        "Remocao de linhas totalmente duplicadas",
-        ["duplicadas_removidas = int(df.duplicated().sum())",
-         "df = df.drop_duplicates().reset_index(drop=True)"],
-    ))
-
-    for numero, (descricao, corpo) in enumerate(passos, start=1):
-        linhas.append(f"# {numero}. {descricao}")
-        linhas.extend(corpo)
-        linhas.append("")
-
-    linhas += [
-        'print("Linhas antes:", len(df_bruto), "| depois:", len(df),'
-        ' "| duplicadas removidas:", duplicadas_removidas)',
-        "",
-        "df.dtypes.to_frame('tipo').T",
-    ]
-    return "\n".join(linhas)
-
-
-def _celula_describe_numericas(sel: Selecao) -> str:
-    lista = ", ".join(repr(c) for c in sel.numericas_describe)
-    return textwrap.dedent(f'''
-        COLS_NUM = [{lista}]
-
-        if COLS_NUM:
-            estatisticas = df[COLS_NUM].describe().T
-            estatisticas["distorcao"] = df[COLS_NUM].skew()
-            estatisticas["cauda"] = df[COLS_NUM].kurtosis()
-            estatisticas["faltantes"] = df[COLS_NUM].isna().sum()
-            print("Estatisticas descritivas:")
-            estatisticas.round(3)
+def _celula_ausentes() -> str:
+    return _codigo('''
+        ausentes = df.isna().sum().to_frame("ausentes")
+        ausentes["%"] = (100 * ausentes["ausentes"] / len(df)).round(1)
+        ausentes = ausentes[ausentes["ausentes"] > 0].sort_values("ausentes", ascending=False)
+        if ausentes.empty:
+            print("Nenhum valor ausente.")
         else:
-            print("Nenhuma variavel numerica para descrever.")
-    ''').strip()
-
-
-def _celula_frequencias(sel: Selecao) -> str:
-    lista = ", ".join(repr(c) for c in sel.categorias)
-    return textwrap.dedent(f'''
-        COLS_CAT = [{lista}]
-
-        for coluna in COLS_CAT:
-            print("\\n== " + coluna + " ==", "| valores distintos:", df[coluna].nunique())
-            print(df[coluna].value_counts(dropna=False).head({TOP_N_CATEGORIAS}).to_string())
-    ''').strip()
-
-
-def _celula_exemplos_texto(sel: Selecao) -> str:
-    lista = ", ".join(repr(c) for c in sel.texto)
-    return textwrap.dedent(f'''
-        COLS_TEXTO = [{lista}]
-
-        print("Texto livre: alguns exemplos de cada coluna (sem grafico de frequencia,")
-        print("porque o numero de valores distintos e alto demais)")
-        for coluna in COLS_TEXTO:
-            exemplos = df[coluna].dropna().astype(str).unique()[:5]
-            print("\\n== " + coluna + " ==")
-            for exemplo in exemplos:
-                print(" -", exemplo[:140])
-    ''').strip()
-
-
-def _celula_agregacoes(sel: Selecao) -> str:
-    pares = ", ".join(f"({cat!r}, {num!r})" for cat, num in sel.combos_num_cat)
-    linhas = [f"PARES = [{pares}]", ""]
-    linhas += [
-        "for categoria, numerica in PARES:",
-        '    print("\\n== " + numerica + " por " + categoria + " ==")',
-        "    tabela = (",
-        "        df.groupby(categoria, dropna=False)[numerica]",
-        '        .agg(["count", "mean", "median", "std", "min", "max"])',
-        "        .round(2)",
-        '        .sort_values("mean", ascending=False)',
-        "    )",
-        "    print(tabela.head(15).to_string())",
-    ]
-    if sel.combos_cat_cat:
-        a, b = sel.combos_cat_cat[0]
-        linhas += [
-            "",
-            f'print("\\n== contagem cruzada {a} x {b} ==")',
-            f"pd.crosstab(df[{a!r}], df[{b!r}]).to_string()",
-        ]
-    return "\n".join(linhas)
+            display(ausentes)
+    ''')
 
 
 def _celula_grafico_ausentes() -> str:
-    return textwrap.dedent('''
-        ausentes_pct = df_bruto.isna().mean().mul(100).sort_values(ascending=False)
-        ausentes_pct = ausentes_pct[ausentes_pct > 0]
+    return _codigo('''
+        pct_ausentes = df.isna().mean().mul(100)
+        pct_ausentes = pct_ausentes[pct_ausentes > 0].sort_values().tail(30)
 
-        if len(ausentes_pct):
-            fig, ax = plt.subplots(figsize=(9, max(2.5, 0.45 * len(ausentes_pct))))
-            sns.barplot(x=ausentes_pct.values, y=ausentes_pct.index, ax=ax, color="#C44E52")
-            for i, valor in enumerate(ausentes_pct.values):
-                ax.text(valor, i, "  " + format(valor, ".1f") + "%", va="center", fontsize=9)
-            finalizar(ax, "Percentual de valores ausentes por coluna",
-                      "% de celulas ausentes", "Coluna")
-            exibir()
+        fig, ax = plt.subplots(figsize=(8, 0.4 * len(pct_ausentes) + 1.2))
+        ax.barh(pct_ausentes.index.astype(str), pct_ausentes.values, color="#C44E52")
+        for y, valor in enumerate(pct_ausentes.values):
+            ax.text(valor, y, f" {formatar_numero(valor, 1)}%", va="center", fontsize=9)
+        ax.set_xlim(0, 110)
+        finalizar(ax, "Valores ausentes por coluna", "% de linhas sem valor")
+        exibir()
+    ''')
+
+
+def _celula_qualidade(numericas: list[str], categoricas: list[str], parecidas: list[str]) -> str:
+    exemplo = "".join(
+        f"\n# df[{nome!r}] = df[{nome!r}].str.strip().str.capitalize()" for nome in parecidas)
+    if exemplo:
+        exemplo = ("\n\n# Para unificar variantes de categorias, adapte e descomente (e rode as "
+                   "células seguintes de novo):" + exemplo)
+    return _codigo('''
+        COLS_NUM = <<NUM>>
+        COLS_CAT = <<CAT>>
+        qualidade = checar_qualidade(df, COLS_NUM, COLS_CAT, bruto=df_bruto)
+        if qualidade.empty:
+            print("Nenhum problema encontrado pelas checagens automáticas.")
         else:
-            print("Nenhum valor ausente no arquivo.")
-    ''').strip()
+            display(qualidade)<<EXEMPLO>>
+    ''', NUM=_literal(numericas), CAT=_literal(categoricas), EXEMPLO=exemplo)
+
+
+def _celula_describe(sel: Selecao) -> str:
+    return _codigo('''
+        COLS_DESCRIBE = <<COLS>>
+        NOMES = {"count": "n", "mean": "média", "std": "desvio_padrão", "min": "mínimo",
+                 "25%": "q1", "50%": "mediana", "75%": "q3", "max": "máximo"}
+
+        estatisticas = df[COLS_DESCRIBE].describe().T.rename(columns=NOMES)
+        estatisticas["assimetria"] = df[COLS_DESCRIBE].skew()
+        estatisticas["curtose"] = df[COLS_DESCRIBE].kurtosis()
+        estatisticas["ausentes"] = df[COLS_DESCRIBE].isna().sum()
+        estatisticas.round(2)
+    ''', COLS=_literal(sel.numericas_describe))
+
+
+GRADE_NUMERICAS = '''
+n_colunas = min(3, len(COLS_NUM_GRAFICO))
+n_linhas = int(np.ceil(len(COLS_NUM_GRAFICO) / n_colunas))
+fig, axes = plt.subplots(n_linhas, n_colunas, figsize=(4.4 * n_colunas, 3.2 * n_linhas),
+                         squeeze=False)
+for ax in axes.ravel()[len(COLS_NUM_GRAFICO):]:
+    ax.set_visible(False)
+'''
 
 
 def _celula_histogramas(sel: Selecao) -> str:
-    lista = ", ".join(repr(c) for c in sel.numericas)
-    return textwrap.dedent(f'''
-        COLS_NUM_GRAFICO = [{lista}]
-
-        if COLS_NUM_GRAFICO:
-            n = len(COLS_NUM_GRAFICO)
-            colunas = min(3, n)
-            linhas = int(np.ceil(n / colunas))
-            fig, axes = plt.subplots(linhas, colunas, figsize=(4.4 * colunas, 3.2 * linhas),
-                                     squeeze=False)
-            for ax, coluna in zip(axes.ravel(), COLS_NUM_GRAFICO):
-                serie = df[coluna].dropna()
-                if serie.empty:
-                    ax.text(0.5, 0.5, "sem valores validos", ha="center", va="center")
-                    finalizar(ax, coluna, coluna, "")
-                    continue
-                sns.histplot(serie, kde=len(serie) >= 50, ax=ax, color="#4C72B0")
-                finalizar(ax, coluna, coluna, "Frequencia")
-            for ax in axes.ravel()[n:]:
-                ax.set_visible(False)
-            plt.tight_layout()
-            plt.show()
-        else:
-            print("Sem variaveis numericas para histogramas.")
-    ''').strip()
+    return _codigo('''
+        COLS_NUM_GRAFICO = <<COLS>>
+        <<GRADE>>
+        for ax, coluna in zip(axes.ravel(), COLS_NUM_GRAFICO):
+            valores = df[coluna].dropna()
+            # Curva de densidade só entre 50 e 50.000 valores (com poucos engana; com muitos é lenta).
+            sns.histplot(valores, kde=50 <= len(valores) <= 50_000, ax=ax, color="#4C72B0")
+            ax.axvline(valores.median(), color="#C44E52", linestyle="--", linewidth=1)
+            finalizar(ax, coluna, "", "Frequência")
+        exibir()
+    ''', COLS=_literal(sel.numericas), GRADE=GRADE_NUMERICAS.strip())
 
 
-def _celula_boxplots_numericas(sel: Selecao) -> str:
-    lista = ", ".join(repr(c) for c in sel.numericas)
-    return textwrap.dedent(f'''
-        COLS_NUM_GRAFICO = [{lista}]
+def _celula_outliers() -> str:
+    return _codigo('''
+        <<GRADE>>
+        for ax, coluna in zip(axes.ravel(), COLS_NUM_GRAFICO):
+            sns.boxplot(x=df[coluna].dropna(), ax=ax, color="#55A868", fliersize=3)
+            finalizar(ax, coluna)
+        exibir()
 
-        if COLS_NUM_GRAFICO:
-            n = len(COLS_NUM_GRAFICO)
-            colunas = min(3, n)
-            linhas = int(np.ceil(n / colunas))
-            fig, axes = plt.subplots(linhas, colunas, figsize=(4.4 * colunas, 3.2 * linhas),
-                                     squeeze=False)
-            for ax, coluna in zip(axes.ravel(), COLS_NUM_GRAFICO):
-                base = df.dropna(subset=[coluna])
-                if base.empty:
-                    ax.text(0.5, 0.5, "sem valores validos", ha="center", va="center")
-                    finalizar(ax, coluna, coluna, "")
-                    continue
-                sns.boxplot(data=base, x=coluna, ax=ax, color="#55A868", fliersize=3)
-                finalizar(ax, coluna, coluna, "Valor")
-            for ax in axes.ravel()[n:]:
-                ax.set_visible(False)
-            plt.tight_layout()
-            plt.show()
-        else:
-            print("Sem variaveis numericas para boxplots.")
-    ''').strip()
+        display(tabela_outliers(df, COLS_NUM_GRAFICO).round(2))
+    ''', GRADE=GRADE_NUMERICAS.strip())
 
 
-def _celula_barras_categoricas(sel: Selecao) -> str:
-    lista = ", ".join(repr(c) for c in sel.categorias_barra)
-    return textwrap.dedent(f'''
-        COLS_CAT_GRAFICO = [{lista}]
+def _celula_frequencias(sel: Selecao) -> str:
+    return _codigo('''
+        COLS_FREQ = <<COLS>>
+        for coluna in COLS_FREQ:
+            contagem = df[coluna].value_counts(dropna=False)
+            tabela = contagem.head(15).to_frame("registros")
+            if len(contagem) > 15:
+                tabela.loc["(outras)"] = contagem.iloc[15:].sum()
+            tabela["%"] = (100 * tabela["registros"] / len(df)).round(1)
+            print(f"{coluna}: {df[coluna].nunique()} valores distintos")
+            display(tabela)
+    ''', COLS=_literal(sel.categorias))
 
-        if COLS_CAT_GRAFICO:
-            fig, axes = plt.subplots(len(COLS_CAT_GRAFICO), 1,
-                                     figsize=(9, 3.3 * len(COLS_CAT_GRAFICO)), squeeze=False)
-            for ax, coluna in zip(axes.ravel(), COLS_CAT_GRAFICO):
-                ordem = df[coluna].value_counts().head({TOP_N_CATEGORIAS}).index
-                sns.countplot(data=df, y=coluna, order=ordem, ax=ax, color="#4C72B0")
-                total = int(df[coluna].notna().sum())
-                for posicao, categoria in enumerate(ordem):
-                    quantidade = int((df[coluna] == categoria).sum())
-                    pct = 100 * quantidade / total if total else 0
-                    ax.text(quantidade, posicao, "  " + format(pct, ".1f") + "%",
-                            va="center", fontsize=9)
-                finalizar(ax, coluna + " - categorias mais frequentes", "Registros", coluna)
+
+def _celula_barras(sel: Selecao) -> str:
+    return _codigo('''
+        COLS_CAT_GRAFICO = <<COLS>>
+        for coluna in COLS_CAT_GRAFICO:
+            contagem = df[coluna].value_counts().head(15).sort_values()
+            total = df[coluna].notna().sum()
+            fig, ax = plt.subplots(figsize=(8, 0.35 * len(contagem) + 1.2))
+            ax.barh(contagem.index.astype(str), contagem.values, color="#4C72B0")
+            for y, valor in enumerate(contagem.values):
+                ax.text(valor, y, f" {formatar_numero(100 * valor / total, 1)}%", va="center", fontsize=9)
+            finalizar(ax, f"{coluna}: categorias mais frequentes", "Registros")
             exibir()
-        else:
-            print("Sem variaveis categoricas adequadas para grafico de frequencia.")
-    ''').strip()
+    ''', COLS=_literal(sel.categorias_barra))
+
+
+def _celula_texto(sel: Selecao) -> str:
+    return _codigo('''
+        COLS_TEXTO = <<COLS>>
+        for coluna in COLS_TEXTO:
+            textos = df[coluna].dropna().astype(str)
+            print(f"{coluna}: {textos.nunique()} valores distintos, "
+                  f"{textos.str.len().median():.0f} caracteres na mediana")
+            for exemplo in textos.drop_duplicates().head(5):
+                print("  -", exemplo[:120])
+            print()
+    ''', COLS=_literal(sel.texto))
 
 
 def _celula_correlacao(sel: Selecao) -> str:
-    lista = ", ".join(repr(c) for c in sel.numericas_correlacao)
-    return textwrap.dedent(f'''
-        COLS_CORR = [{lista}]
+    return _codigo('''
+        COLS_CORR = <<COLS>>
+        # Pares com menos de 10 linhas preenchidas em comum ficam em branco.
+        pearson = df[COLS_CORR].corr(method="pearson", min_periods=10)
+        spearman = df[COLS_CORR].corr(method="spearman", min_periods=10)
 
-        if len(COLS_CORR) >= 2:
-            matriz = df[COLS_CORR].corr(numeric_only=True)
-            fig, ax = plt.subplots(figsize=(1.15 * len(COLS_CORR) + 3,
-                                            0.95 * len(COLS_CORR) + 2.5))
-            sns.heatmap(matriz, annot=True, fmt=".2f", cmap="vlag", center=0,
-                        square=True, linewidths=0.5, ax=ax)
-            finalizar(ax, "Correlacao de Pearson entre variaveis numericas")
-            plt.tight_layout()
-            plt.show()
+        fig, ax = plt.subplots(figsize=(0.8 * len(COLS_CORR) + 3, 0.7 * len(COLS_CORR) + 2))
+        sns.heatmap(pearson, annot=len(COLS_CORR) <= 12, fmt=".2f", cmap="vlag", vmin=-1, vmax=1,
+                    square=True, linewidths=0.5, ax=ax)
+        finalizar(ax, "Correlação de Pearson")
+        exibir()
 
-            pares = []
-            for i, a in enumerate(COLS_CORR):
-                for b in COLS_CORR[i + 1:]:
-                    pares.append((abs(matriz.loc[a, b]), a, b, matriz.loc[a, b]))
-            tabela = (pd.DataFrame(pares, columns=["abs", "variavel_a", "variavel_b", "r"])
-                        .sort_values("abs", ascending=False)
-                        .drop(columns="abs"))
-            print("Pares de variaveis ordenados por correlacao:")
-            tabela.round(3).head(15)
-        else:
-            print("E necessario ao menos 2 variaveis numericas para calcular correlacoes.")
-    ''').strip()
+        pares = []
+        for i, a in enumerate(COLS_CORR):
+            for b in COLS_CORR[i + 1:]:
+                r, rho = pearson.loc[a, b], spearman.loc[a, b]
+                pares.append({"variável_a": a, "variável_b": b, "r": r, "rho": rho,
+                              "n": len(df[[a, b]].dropna()),
+                              "força": classificar_correlacao(rho if abs(rho) > abs(r) else r)})
+        tabela_corr = pd.DataFrame(pares)
+        ordem = tabela_corr[["r", "rho"]].abs().max(axis=1).sort_values(ascending=False).index
+        tabela_corr.loc[ordem].head(15).round(3)
+    ''', COLS=_literal(sel.numericas_correlacao))
 
 
-def _celula_boxplot_agrupado(sel: Selecao) -> str:
-    pares = ", ".join(f"({cat!r}, {num!r})" for cat, num in sel.combos_num_cat)
-    return textwrap.dedent(f'''
-        PARES = [{pares}]
-
+def _celula_agregacoes(sel: Selecao) -> str:
+    return _codigo('''
+        PARES = <<PARES>>
         for categoria, numerica in PARES:
-            base = df.dropna(subset=[categoria, numerica])
-            if base.empty:
-                continue
-            top = base[categoria].value_counts().head(8).index
+            tabela = (
+                df.groupby(categoria)[numerica]
+                .agg(n="count", média="mean", mediana="median", desvio_padrão="std",
+                     mínimo="min", máximo="max")
+                .sort_values("mediana", ascending=False)
+            )
+            eta2 = eta_quadrado(df, categoria, numerica)
+            print(f"{numerica} por {categoria}: eta² = {formatar_numero(eta2) if eta2 is not None else '—'}")
+            display(tabela.round(2))
+    ''', PARES=_literal(sel.combos_num_cat))
+
+
+def _celula_comparacao() -> str:
+    return _codigo('''
+        for categoria, numerica in PARES:
+            base = df[[categoria, numerica]].dropna()
+            ordem = base.groupby(categoria)[numerica].median().sort_values(ascending=False).index[:8]
+            base = base[base[categoria].isin(ordem)]
+            # Os pontos individuais usam no máximo 2.000 linhas (amostra fixa), por legibilidade.
+            pontos = base if len(base) <= 2000 else base.sample(2000, random_state=0)
+            nota = "" if len(pontos) == len(base) else f" (pontos: amostra de 2.000 de {len(base)})"
+
             fig, ax = plt.subplots(figsize=(9, 4.2))
-            sns.boxplot(data=base, x=categoria, y=numerica, order=top, ax=ax,
-                        color="#4C72B0", fliersize=3)
-            sns.stripplot(data=base, x=categoria, y=numerica, order=top, ax=ax,
+            sns.boxplot(data=base, x=categoria, y=numerica, order=ordem, ax=ax,
+                        color="#A1C9F4", fliersize=0)
+            sns.stripplot(data=pontos, x=categoria, y=numerica, order=ordem, ax=ax,
                           color="#2F2F2F", alpha=0.35, size=2.5)
-            finalizar(ax, numerica + " por " + categoria, categoria, numerica)
-            plt.xticks(rotation=30, ha="right")
+            finalizar(ax, f"{numerica} por {categoria}{nota}", categoria, numerica)
+            ax.tick_params(axis="x", labelrotation=30)
             exibir()
-    ''').strip()
+    ''')
 
 
-def _celula_cruzamento_categorias(sel: Selecao) -> str:
-    if not sel.combos_cat_cat:
-        return ""
+def _celula_cruzamento(sel: Selecao) -> str:
     a, b = sel.combos_cat_cat[0]
-    return textwrap.dedent(f'''
-        tabela = pd.crosstab(df[{a!r}], df[{b!r}], normalize="index").round(3)
-        print("Proporcao de " + {b!r} + " dentro de cada valor de " + {a!r} + ":")
-        fig, ax = plt.subplots(figsize=(8 + 1.2 * tabela.shape[1],
-                                        2 + 0.6 * tabela.shape[0]))
-        sns.heatmap(tabela, annot=True, cmap="Blues", linewidths=0.5, ax=ax, cbar=False)
-        finalizar(ax, "Composicao relativa entre as duas variaveis")
-        plt.tight_layout()
-        plt.show()
-    ''').strip()
+    return _codigo('''
+        A, B = <<A>>, <<B>>
+        print(f"V de Cramér entre {A} e {B}: {formatar_numero(v_de_cramer(df, A, B))}")
+        display(pd.crosstab(df[A], df[B], margins=True, margins_name="(total)"))
+
+        proporcao = pd.crosstab(df[A], df[B], normalize="index").mul(100)
+        fig, ax = plt.subplots(figsize=(1.1 * proporcao.shape[1] + 4, 0.5 * proporcao.shape[0] + 1.8))
+        sns.heatmap(proporcao, annot=True, fmt=".0f", cmap="Blues", linewidths=0.5, cbar=False, ax=ax)
+        finalizar(ax, f"Composição de {B} em cada {A} (% da linha)", B, A)
+        exibir()
+    ''', A=repr(a), B=repr(b))
 
 
-def _celula_serie_temporal(df: pd.DataFrame, sel: Selecao) -> str:
-    regra = _regra_resample(df, sel.datas)
-    datas = ", ".join(repr(c) for c in sel.datas)
-    series = ", ".join(repr(c) for c in sel.serie_temporal)
-    cabecalho = textwrap.dedent(f'''
-        COLS_DATA = [{datas}]
-        COLS_SERIE = [{series}]
-        REGRA = {regra!r}
-    ''').strip()
+def _celula_serie_temporal(sel: Selecao) -> str:
+    return _codigo('''
+        # Periodicidade por coluna de data: D = dia, W = semana, MS = mês, QS = trimestre, YS = ano.
+        REGRAS = <<REGRAS>>
+        COLS_SERIE = <<SERIE>>
+        FORMATO_PERIODO = {"D": "%d/%m/%Y", "W": "%d/%m/%Y", "MS": "%m/%Y", "QS": "%m/%Y", "YS": "%Y"}
 
-    if sel.serie_temporal:
-        corpo = textwrap.dedent('''
-            for coluna_data in COLS_DATA:
-                base = df.dropna(subset=[coluna_data]).set_index(coluna_data)
-                medias = base[COLS_SERIE].resample(REGRA).mean()
-                registros = base[COLS_SERIE].resample(REGRA).count().sum(axis=1)
-                tem_dados = registros > 0
+        for coluna_data, regra in REGRAS.items():
+            base = df.dropna(subset=[coluna_data]).set_index(coluna_data).sort_index()
+            contagem = base.resample(regra).size()
+            medias = base[COLS_SERIE].resample(regra).mean()
 
-                fig, (ax_valor, ax_volume) = plt.subplots(2, 1, figsize=(11, 6.5), sharex=True)
-                medias[tem_dados].plot(ax=ax_valor, marker="o", markersize=4, linewidth=2)
-                finalizar(ax_valor, "Media por periodo de " + ", ".join(COLS_SERIE))
-                registros[tem_dados].plot(ax=ax_volume, kind="bar", color="#A9A9A9", width=0.8)
-                finalizar(ax_volume, "Registros por periodo", "", "Registros")
+            paineis = len(COLS_SERIE) + 1
+            fig, axes = plt.subplots(paineis, 1, figsize=(11, 2.4 * paineis + 0.6), sharex=True,
+                                     squeeze=False)
+            axes = axes.ravel()
+            for ax, coluna in zip(axes, COLS_SERIE):
+                # Períodos sem registros ficam como lacunas na linha.
+                ax.plot(medias.index, medias[coluna], marker="o", markersize=3, linewidth=1.5)
+                finalizar(ax, f"Média de {coluna} por período", "", coluna)
+            largura = 0.8 * (contagem.index.to_series().diff().dt.days.median() if len(contagem) > 1 else 1)
+            axes[-1].bar(contagem.index, contagem.values, width=largura, color="#A9A9A9")
+            finalizar(axes[-1], f"Registros por período ({coluna_data})", "", "Registros")
+            formatar_eixo_datas(axes[-1])
+            exibir()
+
+            tabela = medias.round(2)
+            tabela.insert(0, "registros", contagem, allow_duplicates=True)
+            tabela.index = tabela.index.strftime(FORMATO_PERIODO[regra])
+            tabela.index.name = "período"
+            if len(tabela) > 36:
+                print(f"Últimos 36 de {len(tabela)} períodos:")
+            display(tabela.tail(36))
+    ''', REGRAS=_literal(sel.regras), SERIE=_literal(sel.serie_temporal))
+
+
+def _celulas_alvo_numerico(sel: Selecao) -> list[str]:
+    celulas = [_codigo('''
+        valores = df[ALVO].dropna()
+        display(valores.describe().to_frame().T.round(2))
+
+        fig, ax = plt.subplots(figsize=(8, 3.6))
+        sns.histplot(valores, kde=50 <= len(valores) <= 50_000, ax=ax, color="#DD8452")
+        ax.axvline(valores.median(), color="#C44E52", linestyle="--", linewidth=1)
+        finalizar(ax, f"Distribuição de {ALVO} (tracejado: mediana)", ALVO, "Frequência")
+        exibir()
+    ''')]
+    if sel.alvo_numericas:
+        celulas.append(_codigo('''
+            COLS_CORR_ALVO = <<COLS>>
+            base = df[[ALVO] + COLS_CORR_ALVO]
+            correlacoes = pd.DataFrame({
+                "r": base.corr(method="pearson", min_periods=10)[ALVO].drop(ALVO),
+                "rho": base.corr(method="spearman", min_periods=10)[ALVO].drop(ALVO),
+                "n": [len(df[[ALVO, coluna]].dropna()) for coluna in COLS_CORR_ALVO],
+            })
+            correlacoes["força"] = [classificar_correlacao(rho if abs(rho) > abs(r) else r)
+                                    for r, rho in zip(correlacoes["r"], correlacoes["rho"])]
+            correlacoes.sort_values("rho", key=abs, ascending=False).round(3)
+        ''', COLS=_literal(sel.alvo_numericas)))
+    if sel.alvo_categorias:
+        celulas.append(_codigo('''
+            CATS_ALVO = <<COLS>>
+            for categoria in CATS_ALVO:
+                tabela = (df.groupby(categoria)[ALVO]
+                            .agg(n="count", média="mean", mediana="median")
+                            .sort_values("média"))
+                display(tabela.iloc[::-1].round(2))
+                fig, ax = plt.subplots(figsize=(8, 0.4 * len(tabela) + 1.2))
+                ax.barh(tabela.index.astype(str), tabela["média"], color="#DD8452")
+                ax.axvline(df[ALVO].mean(), color="#C44E52", linestyle="--", linewidth=1)
+                finalizar(ax, f"Média de {ALVO} por {categoria} (tracejado: média geral)", ALVO)
                 exibir()
+        ''', COLS=_literal(sel.alvo_categorias)))
+    return celulas
 
-                tabela_periodo = medias[tem_dados].round(2)
-                tabela_periodo.insert(0, "registros", registros[tem_dados])
-                tabela_periodo.head(15)
-        ''').strip()
-    else:
-        corpo = textwrap.dedent('''
-            for coluna_data in COLS_DATA:
-                serie = (
-                    df.dropna(subset=[coluna_data])
-                      .set_index(coluna_data)
-                      .resample(REGRA)
-                      .size()
-                )
-                fig, ax = plt.subplots(figsize=(11, 4))
-                serie.plot(ax=ax, kind="bar", color="#4C72B0", width=0.8)
-                finalizar(ax, "Registros por periodo", "Periodo", "Registros")
-                plt.xticks(rotation=45, ha="right")
+
+def _celulas_alvo_classes(sel: Selecao) -> list[str]:
+    celulas = [_codigo('''
+        # Classe cuja taxa é comparada entre os grupos (troque se quiser outra).
+        CLASSE_POSITIVA = <<CLASSE>>
+
+        classes = df[ALVO].value_counts(dropna=False).to_frame("registros")
+        classes["%"] = (100 * classes["registros"] / len(df)).round(1)
+        classes.index = classes.index.map(lambda valor: "(ausente)" if pd.isna(valor) else str(valor))
+        display(classes)
+
+        fig, ax = plt.subplots(figsize=(7, 0.45 * len(classes) + 1.2))
+        ax.barh(classes.index, classes["registros"], color="#55A868")
+        finalizar(ax, f"Distribuição de {ALVO}", "Registros")
+        exibir()
+    ''', CLASSE=repr(sel.classe_positiva))]
+    if sel.alvo_categorias:
+        celulas.append(_codigo('''
+            CATS_ALVO = <<COLS>>
+            taxa_geral = 100 * (df[ALVO].dropna() == CLASSE_POSITIVA).mean()
+            for categoria in CATS_ALVO:
+                base = df.dropna(subset=[ALVO, categoria])
+                taxa = (base[ALVO] == CLASSE_POSITIVA).groupby(base[categoria]).agg(["mean", "count"])
+                taxa.columns = ["taxa_%", "n"]
+                taxa["taxa_%"] = (100 * taxa["taxa_%"]).round(1)
+                taxa = taxa.sort_values("taxa_%")
+                display(taxa.iloc[::-1])
+
+                fig, ax = plt.subplots(figsize=(8, 0.4 * len(taxa) + 1.2))
+                ax.barh(taxa.index.astype(str), taxa["taxa_%"], color="#55A868")
+                ax.axvline(taxa_geral, color="#C44E52", linestyle="--", linewidth=1)
+                finalizar(ax, f"% de {ALVO} = {CLASSE_POSITIVA} por {categoria} (tracejado: geral)", "%")
                 exibir()
-        ''').strip()
-    return cabecalho + "\n\n" + corpo
+        ''', COLS=_literal(sel.alvo_categorias)))
+    if sel.alvo_numericas:
+        celulas.append(_codigo('''
+            COLS_NUM_ALVO = <<COLS>>
+            medias = df.groupby(ALVO)[COLS_NUM_ALVO].mean().round(2)
+            medias.insert(0, "n", df[ALVO].value_counts(), allow_duplicates=True)
+            display(medias)
 
-
-def _celula_alvo(df: pd.DataFrame, sel: Selecao, opcoes: Opcoes) -> str:
-    alvo = opcoes.alvo
-    if alvo in sel.numericas:
-        tipo_alvo = NUMERICA
-    elif alvo in sel.categorias:
-        tipo_alvo = CATEGORICA
-    elif alvo in df.columns:
-        tipo_alvo = NUMERICA if df[alvo].dropna().nunique() > 12 else CATEGORICA
-    else:
-        tipo_alvo = None
-
-    linhas = [f"ALVO = {alvo!r}", "", "if ALVO and ALVO in df.columns:"]
-    if tipo_alvo == NUMERICA:
-        linhas += [
-            "    print('Distribuicao da variavel de interesse:')",
-            "    df[ALVO].describe()",
-            "    fig, ax = plt.subplots(figsize=(8, 3.6))",
-            "    sns.histplot(df[ALVO].dropna(), kde=True, ax=ax, color='#DD8452')",
-            "    finalizar(ax, ALVO + ' - distribuicao', ALVO, 'Frequencia')",
-            "    exibir()",
-            "",
-        ]
-        correlacionaveis = [c for c in sel.numericas_correlacao if c != alvo]
-        if correlacionaveis:
-            lista = ", ".join(repr(c) for c in correlacionaveis)
-            linhas += [
-                "    correlacoes = (df[[ALVO] + " + lista + "]",
-                "                  .corr(numeric_only=True)[ALVO]",
-                "                  .drop(ALVO)",
-                "                  .sort_values(key=abs, ascending=False))",
-                "    print('Correlacao de cada variavel com ' + ALVO + ':')",
-                "    correlacoes.round(3).to_frame('correlacao_com_alvo')",
-            ]
-    elif tipo_alvo == CATEGORICA:
-        linhas += [
-            "    print('Distribuicao das classes:')",
-            "    print(df[ALVO].value_counts(dropna=False).to_string())",
-            "    fig, ax = plt.subplots(figsize=(8, 3.6))",
-            "    sns.countplot(data=df, x=ALVO, ax=ax, color='#55A868')",
-            "    finalizar(ax, ALVO + ' - distribuicao das classes', ALVO, 'Registros')",
-            "    plt.xticks(rotation=30, ha='right')",
-            "    exibir()",
-        ]
-        for numerica in sel.numericas[:2]:
-            linhas += [
-                "",
-                "    fig, ax = plt.subplots(figsize=(9, 4))",
-                f"    top = df[{alvo!r}].value_counts().head(8).index",
-                f"    sns.boxplot(data=df, x={alvo!r}, y={numerica!r}, order=top, ax=ax,"
-                " color='#4C72B0')",
-                f"    finalizar(ax, {numerica!r} + ' por ' + ALVO, ALVO, {numerica!r})",
-                "    plt.xticks(rotation=30, ha='right')",
-                "    exibir()",
-            ]
-    else:
-        linhas += [
-            "    print('Variavel de interesse nao encontrada no arquivo: ' + str(ALVO))",
-        ]
-    linhas += ["else:", '    print("Nenhuma variavel de interesse definida.")']
-    return "\n".join(linhas)
+            fig, axes = plt.subplots(1, len(COLS_NUM_ALVO), figsize=(4.5 * len(COLS_NUM_ALVO), 4),
+                                     squeeze=False)
+            for ax, coluna in zip(axes.ravel(), COLS_NUM_ALVO):
+                base = df[[ALVO, coluna]].dropna()
+                classes_texto = base[ALVO].astype(str)
+                sns.boxplot(x=classes_texto, y=base[coluna], order=sorted(classes_texto.unique()),
+                            ax=ax, color="#4C72B0", fliersize=2)
+                finalizar(ax, coluna, ALVO, coluna)
+            exibir()
+        ''', COLS=_literal(sel.alvo_numericas)))
+    return celulas
 
 
 # --------------------------------------------------------------------------- #
-# Montagem do notebook
+# Montagem
 # --------------------------------------------------------------------------- #
-
 
 def _dedentar(texto: str) -> str:
-    """Remove a indentação de um texto multilinha mantendo a primeira linha.
+    """Tira a indentação de cada linha: o markdown gerado não usa recuo significativo."""
+    return "\n".join(linha.strip() for linha in texto.strip().splitlines())
 
-    Os blocos markdown são escritos alinhados dentro das funções geradoras; sem
-    isso o notebook sairia com parágrafos indentados e quebrando a renderização.
+
+class _Montador:
+    """Acumula as células e numera as seções na ordem em que aparecem."""
+
+    def __init__(self):
+        self.celulas: list[dict] = []
+        self.numero = 0
+        self.sub = 0
+
+    def md(self, secao: str, texto: str) -> None:
+        self.celulas.append({"tipo": "markdown", "fonte": _dedentar(texto), "secao": secao})
+
+    def code(self, secao: str, fonte: str) -> None:
+        self.celulas.append({"tipo": "code", "fonte": fonte.strip(), "secao": secao})
+
+    def titulo(self, texto: str) -> str:
+        self.numero += 1
+        self.sub = 0
+        return f"## {self.numero}. {texto}"
+
+    def subtitulo(self, texto: str) -> str:
+        self.sub += 1
+        return f"### {self.numero}.{self.sub} {texto}"
+
+
+def _descricao_leitura(parametros: dict) -> str:
+    sep = parametros.get("sep", ",")
+    partes = [f"separador {NOMES_SEPARADOR.get(sep, repr(sep))}", f"encoding {parametros.get('encoding')}"]
+    if parametros.get("decimal") == ",":
+        partes.append("decimal com vírgula e milhar com ponto")
+    if parametros.get("compression"):
+        partes.append(f"compressão {parametros['compression']}")
+    return ", ".join(partes)
+
+
+def gerar_celulas(df: pd.DataFrame, perfil: list[ColunaInfo], opcoes: Opcoes, resumo: str,
+                  plano: dict, selecao: Selecao) -> list[dict]:
+    """Lista de células do notebook: {"tipo", "fonte", "secao"}.
+
+    `df` e `perfil` são os dados já limpos (os mesmos usados no resumo).
     """
-    linhas = texto.strip("\n").split("\n")
-    if len(linhas) <= 1:
-        return texto.strip()
-    cauda = [linha for linha in linhas[1:] if linha.strip()]
-    margem = min((len(linha) - len(linha.lstrip()) for linha in cauda), default=0)
-    return "\n".join(
-        [linhas[0].strip()] + [linha[margem:] if linha.strip() else "" for linha in linhas[1:]]
-    ).strip()
+    sel = selecao
+    m = _Montador()
+    alvo = sel.alvo or opcoes.alvo
+    nome = Path(opcoes.caminho_csv).name
+    identificadores = [c.nome for c in perfil if c.identificador]
 
-
-def _md(texto: str) -> dict:
-    return {"tipo": "markdown", "fonte": _dedentar(texto)}
-
-
-def _code(texto: str) -> dict:
-    return {"tipo": "code", "fonte": texto.strip()}
-
-
-def gerar_celulas(df: pd.DataFrame, perfil: list[ColunaInfo], opcoes: Opcoes,
-                  resumo: str) -> list[dict]:
-    """Devolve a lista completa de células do notebook."""
-    sel = selecionar_colunas(df, perfil, opcoes)
-    celulas: list[dict] = []
-
-    celulas.append(_md(f"""
+    linha_alvo = f"\n- **Variável de interesse:** {md_codigo(alvo)}" if alvo else ""
+    m.md("cabecalho", f"""
         # {opcoes.titulo}
 
-        Notebook gerado automaticamente pela skill **csv-eda-notebook**.
+        Notebook gerado pela skill **csv-eda-notebook** a partir de {md_codigo(nome)}.
 
-        - **Arquivo:** `{opcoes.caminho_csv.name}`
-        - **Dimensões:** {df.shape[0]} linhas x {df.shape[1]} colunas
-        - **Leitura:** separador `{opcoes.separador!r}` e encoding `{opcoes.encoding!r}`
+        - **Leitura:** {_descricao_leitura(opcoes.leitura_parametros)}
+        - **Linhas analisadas:** {len(df)} · **Colunas:** {df.shape[1]}{linha_alvo}
 
-        O arquivo é lido na primeira célula de código e todas as análises abaixo se adaptam ao
-        que realmente foi encontrado: distribuições para numéricas, frequências para categóricas,
-        correlações entre numéricas e séries temporais quando existe coluna de data.
-    """))
-    celulas.append(_code(_celula_setup(opcoes)))
-    celulas.append(_md("""
-        ## 0. Configuração e funções de apoio
+        As seções abaixo dependem do que existe no arquivo: só aparecem as análises que fazem
+        sentido para os tipos de coluna detectados. Rode tudo em ordem (*Run All*). O CSV é lido de
+        `CSV_PATH`, relativo à pasta deste notebook.
+    """)
 
-        Ajuste `CSV_PATH`, `SEPARADOR` e `ENCODING` se quiser apontar este notebook para outro
-        arquivo — o resto do código continua funcionando.
-    """))
-    celulas.append(_code(_helpers()))
-    celulas.append(_md("""
-        ## 1. Carregamento dos dados
+    m.md("configuracao", f"""
+        {m.titulo("Configuração")}
 
-        Os valores abaixo foram detectados automaticamente na geração deste notebook.
-    """))
-    celulas.append(_code(_celula_leitura()))
-    celulas.append(_md("""
-        ## 2. Visão geral do dataset
+        Bibliotecas, parâmetros de leitura e variável de interesse. Para analisar outro arquivo
+        com a mesma estrutura, troque `CSV_PATH`.
+    """)
+    m.code("configuracao", _celula_configuracao(opcoes, alvo))
+    m.md("apoio", """
+        **Funções de apoio.** Cópia de `scripts/eda/apoio.py`: conversão de números e datas,
+        limpeza, outliers e checagens de qualidade. São as mesmas funções que calcularam o resumo
+        do fim do notebook. A célula seguinte traz três atalhos para os gráficos.
+    """)
+    m.code("apoio", _fonte_apoio())
+    m.code("apoio", AJUDANTES_GRAFICOS)
 
-        Dimensões, tipos das colunas e volume de valores distintos.
-    """))
-    celulas.append(_code(_celula_tipos()))
-    celulas.append(_code(_celula_valores_unicos()))
-    celulas.append(_md("""
-        ### 2.1. Valores ausentes
+    avisos = "".join(f"\n- {aviso}" for aviso in opcoes.avisos_leitura)
+    bloco_avisos = f"\n**Avisos da leitura:**\n{avisos}" if avisos else ""
+    m.md("leitura", f"""
+        {m.titulo("Leitura dos dados")}
 
-        Percentual de células vazias por coluna, calculado sobre os dados originais (antes de
-        qualquer limpeza).
-    """))
-    celulas.append(_code(BLOCO_AUSENTES))
-    celulas.append(_md("""
-        ### 2.2. Linhas duplicadas
+        `padronizar_colunas` tira espaços das bordas dos nomes, renomeia nomes vazios ou
+        repetidos e descarta colunas `Unnamed` totalmente vazias.
+        {bloco_avisos}
+    """)
+    m.code("leitura", _celula_leitura())
 
-        Duplicatas exatas contam como um problema de qualidade de dados: elas inflam médias e
-        confundiram modelos treinados depois.
-    """))
-    celulas.append(_code(BLOCO_DUPLICADAS))
-    celulas.append(_md("""
-        ## 3. Limpeza mínima
+    m.md("visao_geral", f"""
+        {m.titulo("Visão geral")}
 
-        Ajustes seguros e reversíveis: espaços em texto, números gravados como texto (moeda,
-        separador de milhar), conversão de datas e remoção de duplicatas exatas. Nenhuma coluna
-        é inventada ou descartada aqui — a base original continua em `df_bruto`.
-    """))
-    celulas.append(_code(_celula_limpeza(sel)))
-    celulas.append(_md("""
-        ## 4. Estatísticas descritivas
+        `tipo_analise` é o tipo atribuído pela skill, que decide em quais análises cada coluna
+        entra; `identificador` fica fora dos gráficos.
+    """)
+    m.code("visao_geral", _celula_visao_geral(perfil))
+    m.md("duplicadas", f"""
+        {m.subtitulo("Linhas duplicadas")}
 
-        ### 4.1. Variáveis numéricas
-    """))
-    celulas.append(_code(_celula_describe_numericas(sel)))
-    if sel.categorias:
-        celulas.append(_md("### 4.2. Variáveis categóricas (frequências)"))
-        celulas.append(_code(_celula_frequencias(sel)))
-    if sel.texto:
-        celulas.append(_md("### 4.3. Texto livre"))
-        celulas.append(_code(_celula_exemplos_texto(sel)))
-    if sel.combos_num_cat or sel.combos_cat_cat:
-        celulas.append(_md("""
-            ## 5. Agregações
+        Linhas idênticas a uma anterior, contadas nos dados como foram lidos.
+    """)
+    m.code("duplicadas", _celula_duplicadas())
 
-            Resumo numérico por categoria — a leitura mais útil de dados com pouco volume de
-            categorias distintas.
-        """))
-        celulas.append(_code(_celula_agregacoes(sel)))
+    m.md("limpeza", f"""
+        {m.titulo("Limpeza")}
 
-    celulas.append(_md("""
-        ## 6. Visualizações
+        Ajustes mínimos, descritos em `PLANO_LIMPEZA`: espaços nas bordas dos textos, números
+        gravados como texto (moeda, milhar), datas no formato detectado, ±inf como ausente e,
+        se `REMOVER_DUPLICADAS` for `True`, linhas repetidas. A base original continua em
+        `df_bruto`; o restante do notebook usa `df`.
+    """)
+    m.code("limpeza", _celula_limpeza(plano, identificadores[0] if identificadores else None))
 
-        Cada gráfico foi escolhido pelo tipo da variável: distribuição e boxplot para numéricas,
-        frequência para categóricas, correlação entre numéricas e comparação de grupos.
-    """))
-    celulas.append(_md("### 6.1. Valores ausentes"))
-    celulas.append(_code(_celula_grafico_ausentes()))
+    m.md("ausentes", f"""
+        {m.titulo("Qualidade dos dados")}
+
+        {m.subtitulo("Valores ausentes")}
+
+        Contados depois da limpeza: textos vazios e valores que não converteram também contam.
+    """)
+    m.code("ausentes", _celula_ausentes())
+    if df.isna().any().any():
+        m.code("grafico_ausentes", _celula_grafico_ausentes())
+    numericas = [c.nome for c in perfil if c.tipo == NUMERICA and not c.identificador]
+    categoricas = [c.nome for c in perfil if c.tipo == CATEGORICA and not c.identificador]
+    problemas = checar_qualidade(df, numericas, categoricas)
+    parecidas = problemas.loc[problemas["problema"] == "categorias_parecidas", "coluna"].tolist()
+    m.md("qualidade", f"""
+        {m.subtitulo("Checagens automáticas")}
+
+        Colunas constantes, com muitos ausentes, categorias que só diferem em caixa, acento ou
+        espaços, poucos valores negativos (erro de digitação?), excesso de categorias,
+        identificador repetido e valores infinitos. Nada é corrigido automaticamente aqui.
+    """)
+    m.code("qualidade", _celula_qualidade(numericas, categoricas, parecidas))
+
+    if sel.numericas_describe:
+        m.md("estatisticas_numericas", f"""
+            {m.titulo("Variáveis numéricas")}
+
+            {m.subtitulo("Estatísticas descritivas")}
+
+            `assimetria` acima de 1 (ou abaixo de −1) indica cauda longa à direita (à esquerda);
+            `curtose` alta indica valores extremos frequentes.
+        """)
+        m.code("estatisticas_numericas", _celula_describe(sel))
     if sel.numericas:
-        celulas.append(_md("### 6.2. Distribuição das variáveis numéricas"))
-        celulas.append(_code(_celula_histogramas(sel)))
-        celulas.append(_md("### 6.3. Outliers (boxplot)"))
-        celulas.append(_code(_celula_boxplots_numericas(sel)))
-    if sel.categorias_barra:
-        celulas.append(_md("### 6.4. Frequência das variáveis categóricas"))
-        celulas.append(_code(_celula_barras_categoricas(sel)))
+        m.md("distribuicoes", f"""
+            {m.subtitulo("Distribuições")}
+
+            Histogramas; a linha tracejada marca a mediana. Colunas binárias (0/1) e constantes
+            ficam de fora.
+        """)
+        m.code("distribuicoes", _celula_histogramas(sel))
+        m.md("outliers", f"""
+            {m.subtitulo("Outliers")}
+
+            Regra de Tukey: valores abaixo de Q1 − 1,5·IQR ou acima de Q3 + 1,5·IQR. Outlier não
+            é sinônimo de erro: confira os casos antes de remover qualquer coisa.
+        """)
+        m.code("outliers", _celula_outliers())
+
+    if sel.categorias:
+        m.md("frequencias", f"""
+            {m.titulo("Variáveis categóricas")}
+
+            {m.subtitulo("Frequências")}
+
+            As 15 categorias mais comuns de cada coluna; o restante é somado em "(outras)".
+        """)
+        m.code("frequencias", _celula_frequencias(sel))
+        if sel.categorias_barra:
+            m.md("barras_categoricas", m.subtitulo("Gráficos de frequência"))
+            m.code("barras_categoricas", _celula_barras(sel))
+
+    if sel.texto:
+        m.md("texto_livre", f"""
+            {m.titulo("Texto livre")}
+
+            Colunas com muitos valores distintos (descrições, comentários): sem gráfico de
+            frequência, só exemplos e o tamanho típico dos textos.
+        """)
+        m.code("texto_livre", _celula_texto(sel))
+
     if len(sel.numericas_correlacao) >= 2:
-        celulas.append(_md("### 6.5. Correlação entre variáveis numéricas"))
-        celulas.append(_code(_celula_correlacao(sel)))
+        binarias = [c for c in sel.numericas_correlacao if c in sel.binarias]
+        nota = (f"\n\nColunas binárias ({', '.join(md_codigo(c) for c in binarias)}) entram como "
+                "correlação ponto-bisserial (o `r` de Pearson com uma variável 0/1).") if binarias else ""
+        m.md("correlacao", f"""
+            {m.titulo("Correlação entre numéricas")}
+
+            Pearson (`r`) mede relação linear; Spearman (`rho`) mede relação monotônica e é menos
+            sensível a outliers. Força pelo maior dos dois, em módulo: abaixo de 0,1 desprezível,
+            0,1 fraca, 0,3 moderada, 0,5 forte, 0,7 ou mais muito forte. Correlação não indica
+            causa.{nota}
+        """)
+        m.code("correlacao", _celula_correlacao(sel))
+
     if sel.combos_num_cat:
-        celulas.append(_md("### 6.6. Comparação de uma numérica entre categorias"))
-        celulas.append(_code(_celula_boxplot_agrupado(sel)))
-    cruzamento = _celula_cruzamento_categorias(sel)
-    if cruzamento:
-        celulas.append(_md("### 6.7. Relação entre duas variáveis categóricas"))
-        celulas.append(_code(cruzamento))
+        m.md("agregacoes", f"""
+            {m.titulo("Numéricas por categoria")}
+
+            Pares escolhidos pela maior diferença entre grupos, medida pelo eta²: a fração da
+            variância da numérica explicada pela categoria (0 a 1; só grupos com {MIN_GRUPO} ou mais
+            registros). Como referência, 0,01 é pequeno, 0,06 médio e 0,14 grande.
+        """)
+        m.code("agregacoes", _celula_agregacoes(sel))
+        m.code("comparacao_grupos", _celula_comparacao())
+
+    if sel.combos_cat_cat:
+        a, b = sel.combos_cat_cat[0]
+        m.md("cruzamento_categoricas", f"""
+            {m.titulo("Relação entre categóricas")}
+
+            Par de categóricas mais associado pelo V de Cramér (0 = independentes, 1 = associação
+            total): contagens e composição de {md_codigo(b)} dentro de cada valor de {md_codigo(a)}.
+        """)
+        m.code("cruzamento_categoricas", _celula_cruzamento(sel))
+
     if sel.datas:
-        celulas.append(_md(f"""
-            ### 6.8. Evolução temporal
+        periodos = ", ".join(f"{md_codigo(c)} por {NOME_PERIODO[r]}" for c, r in sel.regras.items())
+        m.md("serie_temporal", f"""
+            {m.titulo("Evolução temporal")}
 
-            Série agregada automaticamente na periodicidade `{_regra_resample(df, sel.datas)}`
-            (mês, semana ou dia, conforme o período coberto pelos dados).
-        """))
-        celulas.append(_code(_celula_serie_temporal(df, sel)))
+            Registros e média das numéricas por período ({periodos}). A periodicidade fica em
+            `REGRAS` e pode ser trocada. Períodos sem registros aparecem como lacunas.
+        """)
+        m.code("serie_temporal", _celula_serie_temporal(sel))
 
-    if opcoes.alvo:
-        celulas.append(_md(f"""
-            ## 7. Variável de interesse: `{opcoes.alvo}`
+    if alvo:
+        if sel.alvo_classes:
+            explicacao = ("Distribuição das classes, taxa da classe `CLASSE_POSITIVA` por grupo e "
+                          "numéricas comparadas entre as classes.")
+            fontes = _celulas_alvo_classes(sel)
+        else:
+            explicacao = ("Distribuição, correlação com as demais numéricas e média por categoria "
+                          "(categorias que mais diferenciam o alvo).")
+            fontes = _celulas_alvo_numerico(sel)
+        m.md("alvo", f"""
+            {m.titulo("Variável de interesse: " + md_codigo(alvo))}
 
-            Distribuição da variável alvo e sua relação com as demais.
-        """))
-        celulas.append(_code(_celula_alvo(df, sel, opcoes)))
+            {explicacao} Associação não é causa.
+        """)
+        for fonte in fontes:
+            m.code("alvo", fonte)
 
-    celulas.append(_md("## 8. Resumo das principais observações"))
-    celulas.append(_md(resumo))
-    celulas.append(_md("""
-        ## 9. Próximos passos
+    m.md("resumo", f"""
+        {m.titulo("Resumo")}
 
-        - Reescreva a seção 8 com as conclusões do seu domínio: a leitura dos números acima é
-          automática, a interpretação é sua.
-        - Aprofunde as variáveis com maior lacuna de qualidade (valores ausentes, outliers).
-        - Se houver objetivo predictivo, use a seção da variável de interesse como ponto de
-          partida para um modelo.
-    """))
-    return celulas
+        Calculado na geração do notebook, com as mesmas funções de limpeza. Se você mudar o
+        notebook, este texto não se atualiza sozinho.
+    """)
+    m.md("resumo", resumo)
+    return m.celulas
+

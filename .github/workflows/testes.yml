@@ -1,0 +1,100 @@
+name: testes
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  MPLBACKEND: Agg
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  testes:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }} · ${{ matrix.rotulo }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Piso declarado em requirements.txt (pandas>=2.0).
+          - os: ubuntu-latest
+            python: "3.10"
+            pandas: pandas==2.0.3 "numpy<2"
+            rotulo: pandas 2.0
+          - os: ubuntu-latest
+            python: "3.12"
+            pandas: pandas~=2.2.0
+            rotulo: pandas 2.2
+          - os: ubuntu-latest
+            python: "3.13"
+            pandas: '"pandas>=3,<4"'
+            rotulo: pandas 3
+            artefato: true
+          # Caminhos, relpath e console cp1252.
+          - os: windows-latest
+            python: "3.12"
+            pandas: pandas~=2.2.0
+            rotulo: pandas 2.2
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Instalar dependências
+        run: python -m pip install -r requirements-dev.txt ${{ matrix.pandas }}
+
+      - name: Versões
+        run: python -c "import sys, numpy, pandas; print(sys.version); print('pandas', pandas.__version__, '| numpy', numpy.__version__)"
+
+      - name: Testes
+        run: python -m pytest -q -m "not lento"
+
+      - name: Exemplo pela linha de comando
+        run: python scripts/gerar_eda.py exemplos/vendas_exemplo.csv --alvo valor_total -o "$RUNNER_TEMP/exemplo.ipynb"
+
+      - name: Guardar o notebook do exemplo
+        if: ${{ always() && matrix.artefato }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: notebook-exemplo
+          path: ${{ runner.temp }}/exemplo.ipynb
+          if-no-files-found: warn
+
+  lento:
+    name: desempenho (200 mil linhas)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Instalar dependências
+        run: python -m pip install -r requirements-dev.txt "pandas>=3,<4"
+
+      - name: Testes de desempenho
+        run: python -m pytest -q -m lento

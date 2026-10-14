@@ -1,11 +1,11 @@
-# Dependências obrigatórias: sem elas a skill não roda.
+# Necessárias para gerar o notebook.
 pandas>=2.0
+numpy>=1.24
 matplotlib>=3.7
 seaborn>=0.13
-numpy>=1.24
 
-# Opcionais: usadas apenas para gravar os resultados (gráficos e tabelas) no .ipynb.
-# Sem elas o notebook continua sendo gerado, mas precisa ser executado manualmente.
+# Necessárias para executar o notebook e gravar gráficos e tabelas no .ipynb.
+# Sem elas o notebook é gerado mesmo assim (código de saída 4) e pode ser rodado depois no Jupyter.
 nbformat>=5.9
-nbconvert>=7.0
+nbclient>=0.8
 ipykernel>=6.25
